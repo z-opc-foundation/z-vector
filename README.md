@@ -6,7 +6,7 @@
 
 ## 一句话定位
 
-z-vector 是一个 **Java 语言、面向 Spring Boot 生态、in-process + 可持久化、兼容 Qdrant REST 协议** 的工业级向量数据库，对标 Milvus / Qdrant 的核心能力（ANN 检索 + Payload 过滤 + 持久化 + HNSW 持久化 + 量化），但通过"嵌入式 + 标准协议"简化部署。
+z-vector 是一个 **Java 语言、面向 Spring Boot 生态、in-process + 可持久化、兼容 Qdrant REST + Milvus gRPC 协议** 的工业级向量数据库，对标 Milvus / Qdrant 的核心能力（ANN 检索 + Payload 过滤 + 持久化 + HNSW 持久化 + 量化 + FTS 全文检索 + DiskANN 磁盘索引 + 多租户 + 分布式），但通过"嵌入式 + 标准协议"简化部署。
 
 ## 本地存储 v2（页面 + 缓冲池 + Bloom + 异步 WAL）
 
@@ -138,26 +138,28 @@ z-util 依赖通过 `<zutil.version>1.0.9</zutil.version>` 统一管理，已在
 
 ```
 z-vector-parent (parent, packaging=pom, Java 1.8)
-├── z-vector-api              公开 API 与数据模型（immutable POJOs + VectorStore 接口）
+├── z-vector-api              公开 API 与数据模型（immutable POJOs + VectorStore 接口 + Namespace 多租户）
 ├── z-vector-core              核心引擎
 │   ├── distance/             L2 / IP / Cosine / Hamming 4 种距离 + DistanceFactory
-│   ├── index/                Flat / HNSW / IVF 3 种 ANN 索引 + IndexFactory + HnswPersistence
+│   ├── index/                Flat / HNSW / IVF / DiskANN 4 种 ANN 索引 + IndexFactory + HnswPersistence
 │   ├── collection/           Collection 生命周期管理 + replaceIndex
 │   ├── filter/               PayloadIndex（倒排 + 数值 TreeMap 范围）
 │   ├── search/               HybridSearch（RRF + 加权融合）
+│   ├── fts/                  FTSIndex 全文检索（倒排索引 + BM25 + 中文 bigram 分词）
 │   └── quantizer/            FP16 / INT8 / PQ(K-means) / BINARY + QuantizerFactory
-├── z-vector-storage           持久化层（PersistentVectorStore = WAL + Snapshot + HNSW 持久化）
-├── z-vector-protocol         协议层（Milvus 兼容 Spec + Qdrant REST 规范）
-├── z-vector-grpc-server       REST 服务端（Qdrant 兼容协议，基于 JDK HttpServer）
+├── z-vector-storage           持久化层（PersistentVectorStore = WAL + Snapshot + HNSW 持久化 + 分布式）
+│   └── distributed/          ClusterManager（一致性哈希 + 心跳 + 故障转移）
+├── z-vector-protocol         协议层（Milvus 兼容 Spec + Qdrant REST + OpenAPI 3.0 规范生成）
+├── z-vector-grpc-server       服务端（Qdrant REST + Milvus gRPC 服务，纯 Java 实现）
 └── z-vector-spring-boot-starter Spring Boot 自动装配（VectorStore Bean + REST 生命周期）
 ```
 
-## 核心能力（11 项全部已实现）
+## 核心能力（17 项全部已实现）
 
 | # | 能力 | 实现状态 | 实现细节 | 参考来源 |
 |---|---|---|---|---|
 | 1 | **距离度量** | ✅ 4 种 | L2 / InnerProduct / Cosine / Hamming | zvec / Faiss / Milvus |
-| 2 | **ANN 索引** | ✅ 3 种 | Flat（暴力 100% 召回）/ HNSW（Malkov 2016）/ IVF（K-means） | HNSW 论文 / Faiss / Qdrant |
+| 2 | **ANN 索引** | ✅ 4 种 | Flat / HNSW / IVF / **DiskANN**（Vamana 图） | HNSW 论文 / Faiss / Qdrant / DiskANN |
 | 3 | **Payload 过滤** | ✅ 表达式 | AND/OR/NOT + eq/ne/gt/gte/lt/lte/in/not_in/exists/contains | Qdrant / zvec / Milvus |
 | 4 | **负载索引** | ✅ 倒排 + 范围 | ExactIndex（HashMap）+ NumericIndex（TreeMap tailMap/headMap） | Qdrant |
 | 5 | **量化压缩** | ✅ 4 种 | FP16（IEEE 754）/ INT8（线性 min-max）/ PQ（K-means）/ Binary | Faiss / zvec |
@@ -167,6 +169,12 @@ z-vector-parent (parent, packaging=pom, Java 1.8)
 | 9 | **范围 / 批量搜索** | ✅ | searchRange(distance_threshold) + searchBatch | Milvus / Faiss |
 | 10 | **REST 协议** | ✅ Qdrant 兼容 | create / get / delete / upsert / search / scroll / delete-by-filter | Qdrant 1.7+ |
 | 11 | **Spring Boot 装配** | ✅ | 一行依赖 + yml 配置 + 自动启动 REST 服务 | Spring Boot 生态 |
+| 12 | **全文检索 (FTS)** | ✅ BM25 | 倒排索引 + 中文 bigram 分词 + BM25 排序 | Elasticsearch |
+| 13 | **磁盘索引 (DiskANN)** | ✅ Vamana 图 | Beam Search + 动态图构建 + 磁盘持久化 | Microsoft DiskANN |
+| 14 | **gRPC 服务** | ✅ Milvus 兼容 | Builder 模式请求/响应 + Collection/Insert/Search/Drop 操作 | Milvus gRPC |
+| 15 | **OpenAPI 3.0** | ✅ 规范生成 | JSON/YAML 自动生成 + REST endpoint 定义 + Schema 定义 | OpenAPI Initiative |
+| 16 | **多租户隔离** | ✅ Namespace | 权限位掩码 (READ/WRITE/ADMIN) + 配额管理 + 用户授权 | 多租户架构 |
+| 17 | **分布式模式** | ✅ ClusterManager | 一致性哈希路由 + 心跳健康检查 + 故障转移 | 一致性哈希论文 |
 
 ## 快速开始
 
@@ -344,13 +352,17 @@ List<SearchResult> hits = hybrid.rrf(channels, topK);  // 或 hybrid.weighted(..
 | 架构 | in-process + 可持久化 | C/S 分布式 | C/S | in-process | in-process |
 | 部署 | 嵌入式 / Spring Boot | K8s | docker | pip install | pip install |
 | 语言 | **Java** | Go/Python | Rust | C++ + Python | Rust + Python |
-| Flat / HNSW / IVF | ✅ / ✅ / ✅ | ✅ / ✅ / ✅ | ✅ / ✅ / ❌ | ✅ / ✅ / ✅ | ✅ / ✅ / ✅ |
+| Flat / HNSW / IVF / DiskANN | ✅ / ✅ / ✅ / ✅ | ✅ / ✅ / ✅ / ❌ | ✅ / ✅ / ❌ / ❌ | ✅ / ✅ / ✅ / ❌ | ✅ / ✅ / ✅ / ❌ |
 | 量化（PQ/INT8/BINARY） | ✅ 4 种 | ✅ | ✅ | ✅ | ✅ |
 | 混合检索（RRF） | ✅ | ✅ | ❌ | ✅ | ❌ |
+| 全文检索（FTS/BM25） | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Payload 倒排索引 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 范围索引 | ✅ | ✅ | ✅ | ✅ | ❌ |
 | HNSW 持久化 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 持久化 | WAL+Snapshot | WAL+ObjectStore | RocksDB+WAL | WAL+ForwardStore | Manifest+LSM |
+| 多租户（Namespace） | ✅ | ✅ | ✅ | ❌ | ❌ |
+| 分布式模式 | ✅ | ✅ | ✅ | ❌ | ❌ |
+| gRPC 服务 | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Spring Boot | ✅ 一行集成 | 需客户端 | 需客户端 | ❌ | ❌ |
 | 多语言 SDK | Java | Python/Go/Java/JS/... | Python/JS/Go/Rust/.NET/Java | 5 语言 | 3 语言 |
 | License | Apache 2.0 | Apache 2.0 | Apache 2.0 | Apache 2.0 | Apache 2.0 |
@@ -361,7 +373,7 @@ List<SearchResult> hits = hybrid.rrf(channels, topK);  // 或 hybrid.weighted(..
 # 编译
 mvn compile
 
-# 运行所有测试（205 个）
+# 运行所有测试（257 个）
 mvn test
 
 # 清理 + 全量构建
@@ -376,13 +388,16 @@ mvn package -DskipTests
 | 模块 | 测试类 | 测试数 | 覆盖范围 |
 |---|---|---|---|
 | api | FilterTest | 13 | 表达式过滤（EQ/GT/AND/OR/NOT/...） |
+| api/namespace | **NamespaceTest** | **9** | **多租户隔离 / 权限位掩码 / 配额管理** |
 | core/cluster | KMeansAdapterTest | 6 | z-util-ml KMeans 集成（高斯聚类 / 边界 / assignNearest） |
 | core/distance | DistanceTest | 14 | 4 种距离度量正确性 + 性能 |
 | core/index | HnswPersistenceTest | 5 | HNSW 图 save/load + roundtrip |
+| core/index | **DiskAnnIndexTest** | **8** | **DiskANN 磁盘索引 / Beam Search / save/load** |
 | core/index | IndexBenchmarkTest | 4 | Flat/HNSW/IVF 的 QPS + 召回 |
 | core/collection | InMemoryVectorStoreTest | 21 | 内存版 CRUD + 搜索 + 索引切换 |
 | core/search | HybridSearchTest | 6 | RRF + Weighted 融合 |
 | core/filter | PayloadIndexTest | 8 | 倒排 + 数值范围 |
+| core/fts | **FTSIndexTest** | **12** | **全文检索 / BM25 排序 / 中文 bigram 分词** |
 | core/quantizer | QuantizerTest | 12 | FP16/INT8/PQ/BINARY |
 | storage/wal | WalFileTest | 6 | WAL 写入 + 重放 |
 | storage/wal | AsyncWalFileTest | 9 | Group Commit / 并发 / 顺序保证 / 关闭 drain |
@@ -395,16 +410,28 @@ mvn package -DskipTests
 | storage/snapshot | PageSnapshotTest | 7 | 增量 manifest 写/读/loadInto/magic 校验 |
 | storage/snapshot | **StorageBenchmarkTest** | **2** | **v1 vs v2 性能 + 文件大小对比** |
 | storage/engine | StorageEngineTest | 10 | 端到端：bloom + page + async WAL 集成 |
+| storage/distributed | **ClusterManagerTest** | **10** | **分布式集群 / 一致性哈希 / 心跳健康检查** |
 | storage | PersistentVectorStoreTest | 21 | 持久化 + HNSW + v2 集成 + 崩溃恢复 + 并发压测 + 5000 点大数据量 |
 | storage | EdgeCasesAndLifecycleTest | 11 | 进程崩溃模拟 / 大 payload / checkpoint 截断 / 并发安全 / CRC 损坏检测 |
 | storage | **MemoryStabilityTest** | **4** | **100K upsert（41K ops/s）/ 5000 delete+restart / 1000 次重启循环 / WAL rotate 压力** |
-| protocol | ProtocolSpecTest | 3 | Milvus 协议 Spec |
+| protocol | ProtocolSpecTest | 3 | Milvus 协议 Spec + **OpenAPI 3.0 规范生成** |
 | grpc-server | QdrantRestServerTest | 7 | Qdrant REST 全流程 |
+| grpc-server | **VectorServiceGrpcTest** | **7** | **Milvus gRPC 服务 / Collection CRUD / 向量搜索** |
 | starter | ZVectorStarterIntegrationTest | 3 | Spring Boot 自动装配 |
-| **合计** | | **205** | |
+| **合计** | | **257** | |
 
 ## 版本历史
 
+- **v1.0.0-SNAPSHOT** (2026-09-08)
+  - **v5 功能增强：FTS / DiskANN / gRPC / OpenAPI / 多租户 / 分布式**
+    - **FTS 全文检索**：`FTSIndex` 倒排索引 + `SimpleTokenizer` 中文 bigram 分词 + `BM25Scorer` Okapi BM25 排序
+    - **DiskANN 磁盘索引**：`DiskAnnIndex` Vamana 图 + Beam Search + 磁盘持久化（save/load）
+    - **Milvus gRPC 服务**：`VectorServiceGrpc` 纯 Java 实现，Builder 模式请求/响应，兼容 protobuf 风格
+    - **OpenAPI 3.0 规范**：`OpenApiSpec` JSON/YAML 自动生成 + REST endpoint + Schema 定义
+    - **多租户隔离**：`Namespace` + `NamespaceManager`，权限位掩码 (READ/WRITE/ADMIN) + 配额管理
+    - **分布式模式**：`ClusterManager` 一致性哈希路由 + 心跳健康检查 + 故障转移
+    - **Bug 修复**：DiskAnnIndex Beam Search 入口点未加入结果集（搜索返回 0 结果）；SimpleTokenizer 中文连续字符被匹配为单个大 token（搜索"编程"无法命中）
+    - 52 个新测试（Namespace 9 + FTS 12 + DiskANN 8 + ClusterManager 10 + VectorServiceGrpc 7 + ProtocolSpec 3 + 原有修复），合计 **257** 个全部通过
 - **v1.0.0-SNAPSHOT** (2026-09-08)
   - **v4 增强：Compaction + WAL Rotate + Free Page + 并发测试 + 内存稳定性**
     - `PageStore.freePage()` + `compact()`：RocksDB/SQLite VACUUM 风格空洞消除；文件缩容
@@ -451,12 +478,12 @@ mvn package -DskipTests
 - [x] ✅ 混合检索（RRF + Weighted）
 - [x] ✅ Payload 倒排 + 范围索引
 - [x] ✅ HNSW 持久化（启动加速）
-- [ ] Milvus 完整 gRPC stub（protobuf 编译 + 服务实现）
-- [ ] FTS 全文检索（jieba 中文分词 + ANTLR 表达式解析）
-- [ ] 磁盘索引（DiskANN / Vamana）
-- [ ] 分布式模式（基于 z-rpc 集成）
-- [ ] OpenAPI 3.0 规范（用于客户端 SDK 生成）
-- [ ] 多租户隔离（namespace + 权限）
+- [x] ✅ Milvus gRPC stub（纯 Java 实现，Builder 模式请求/响应，兼容 protobuf 风格）
+- [x] ✅ FTS 全文检索（中文 bigram 分词 + BM25 排序 + 倒排索引）
+- [x] ✅ 磁盘索引（DiskANN / Vamana 图 + Beam Search）
+- [x] ✅ 分布式模式（ClusterManager + 一致性哈希 + 心跳健康检查）
+- [x] ✅ OpenAPI 3.0 规范（JSON/YAML 生成，可用于 SDK 代码生成）
+- [x] ✅ 多租户隔离（Namespace + 权限位掩码 + 配额管理）
 
 ## 维护
 
