@@ -1,0 +1,25 @@
+# Build
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+*.swp
+*~
+.factorypath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (if any)
+node_modules/
