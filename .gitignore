@@ -1,25 +1,27 @@
-# Build
-target/
+# Java class files
 *.class
-*.jar
-*.war
-*.ear
-*.log
-
-# IDE
+/build
+/target/
 .idea/
+*/target/
+*\target\
+*/metastore_db
+/logs
+*/logs/
+*.log
 *.iml
-.vscode/
-.settings/
-.classpath
-.project
-*.swp
-*~
-.factorypath
+*.jar
+*/*.jar
+*.flattened-pom.xml
+.flattened-pom.xml
+*.lst
 
-# OS
+# macOS
 .DS_Store
-Thumbs.db
+*/.DS_Store
 
-# Node (if any)
-node_modules/
+# Maven repository snapshot staged for Docker build (large file with secrets)
+/.build-context/
+# Maven Central 发布凭证
+.env
+.gnupg/
