@@ -7,7 +7,7 @@
     <parent>
         <groupId>io.github.yuku123</groupId>
         <artifactId>z-vector</artifactId>
-        <version>1.0.1</version>
+        <version>1.0.2</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 

@@ -8,10 +8,10 @@
     <parent>
         <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector</artifactId>
-        <version>1.0.1</version>
+        <version>1.0.2</version>
     </parent>
     <groupId>io.github.yuku123</groupId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
 
     <artifactId>z-vector-protocol</artifactId>
     <packaging>jar</packaging>
@@ -55,7 +55,7 @@
         <dependency>
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector-api</artifactId>
-            <version>1.0.1</version>
+            <version>1.0.2</version>
         </dependency>
 
         <dependency>
