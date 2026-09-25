@@ -87,9 +87,28 @@ public final class IndexFactory {
         return new IvfIndex(distance, dimension, nlist, nprobe, maxIter);
     }
 
+    /**
+     * 解析整型索引参数。
+     * <p>
+     * 必须同时接受 {@link Number} 和数字 {@link String}：持久化层（v1 JSON 与 v2 页快照）
+     * 把 indexParams 的值统一序列化成字符串，恢复时读回来就是 {@code "32"} 而不是 {@code 32}。
+     * 只认 Number 会让 M / efConstruction / efSearch / nlist / nprobe 在每次重启后
+     * 静默回落到默认值（M=32 → 16），召回率与时延随之漂移且不报任何错误。
+     */
     private static int intParam(Map<String, Object> params, String key, int defaultValue) {
         Object v = params.get(key);
         if (v instanceof Number) return ((Number) v).intValue();
+        if (v instanceof CharSequence) {
+            String s = v.toString().trim();
+            if (s.isEmpty()) return defaultValue;
+            try {
+                // 兼容 "16" / "16.0" 两种字符串形态
+                return (int) (s.indexOf('.') >= 0 ? Double.parseDouble(s) : Long.parseLong(s));
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(
+                        "Index param '" + key + "' is not numeric: \"" + s + "\"", e);
+            }
+        }
         return defaultValue;
     }
 }

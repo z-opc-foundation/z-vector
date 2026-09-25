@@ -197,20 +197,37 @@ class IndexBenchmarkTest {
         float[] q = new float[dim];
         new Random(7).nextFloat();
 
-        long t1 = System.currentTimeMillis();
-        int iters = 100;
-        for (int i = 0; i < iters; i++) store.search("docs", q, 10, null);
-        long individual = System.currentTimeMillis() - t1;
+        int iters = 2000;
+        long t1 = System.nanoTime();
+        List<List<SearchResult>> individual = new ArrayList<>(iters);
+        for (int i = 0; i < iters; i++) individual.add(store.search("docs", q, 10, null));
+        long individualNanos = System.nanoTime() - t1;
 
-        List<float[]> batch = new ArrayList<>();
+        List<float[]> batch = new ArrayList<>(iters);
         for (int i = 0; i < iters; i++) batch.add(q);
 
-        long t2 = System.currentTimeMillis();
-        store.searchBatch("docs", batch, 10, null);
-        long batchTime = System.currentTimeMillis() - t2;
+        long t2 = System.nanoTime();
+        List<List<SearchResult>> batched = store.searchBatch("docs", batch, 10, null);
+        long batchNanos = System.nanoTime() - t2;
 
-        LOG.info("=== Batch vs Individual: {}ms vs {}ms ===", individual, batchTime);
-        assertTrue(batchTime < individual * 2,
-                "Batch search should not be much slower than individual");
+        // 先钉正确性：两条路必须给同样的结果，否则"没慢多少"毫无意义
+        assertEquals(iters, batched.size());
+        for (int i = 0; i < iters; i += iters / 10) {
+            assertEquals(idsOf(individual.get(i)), idsOf(batched.get(i)),
+                    "batch result differs at #" + i);
+        }
+        // 旧写法用 currentTimeMillis 量 100 次 flat 查询：flat 去掉每次查询 1.9MB 的克隆后
+        // baseline 直接读成 0ms，断言退化成 batchTime < 0 永远红。改用 ns 且把样本量提到
+        // 分辨率以上（这里两侧各 ~20ms）。
+        LOG.info("=== Batch vs Individual: {}ns vs {}ns ===", batchNanos, individualNanos);
+        assertTrue(batchNanos <= individualNanos * 2,
+                "Batch search should not be much slower than individual; batch=" + batchNanos
+                        + "ns, individual=" + individualNanos + "ns");
+    }
+
+    private static List<String> idsOf(List<SearchResult> results) {
+        List<String> ids = new ArrayList<>(results.size());
+        for (SearchResult r : results) ids.add(r.getVectorId());
+        return ids;
     }
 }

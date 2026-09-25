@@ -1,5 +1,6 @@
 package com.zifang.z.vector.core.index;
 
+import com.zifang.z.vector.api.Filter;
 import com.zifang.z.vector.api.SearchResult;
 import com.zifang.z.vector.api.VectorPoint;
 import com.zifang.z.vector.core.distance.Distance;
@@ -115,8 +116,17 @@ public class HnswIndex implements Index {
     @Override
     public int dimension() { return dimension; }
 
+    /**
+     * 现存节点数。
+     * <p>
+     * <b>不能</b>写成 {@code nodes.size() - tombstones.size()}：{@link #remove(String)} 已经把
+     * 节点从 {@code nodes} 里物理删掉、只是另外记一条 tombstone 用来挡住"邻居表里残留的引用"，
+     * 两个集合永不相交，相减等于每删一个点就少算两个 —— {@code Collection.count()} 会随删除
+     * 成倍下坠，而 {@code Collection} 用它跟自己维护的 payload 倒排做同步校验，误判成"不同步"
+     * 之后过滤搜索会整体退回慢路径。
+     */
     @Override
-    public int size() { return nodes.size() - tombstones.size(); }
+    public int size() { return nodes.size(); }
 
     @Override
     public boolean isBuilt() { return entryPoint != null; }
@@ -233,7 +243,11 @@ public class HnswIndex implements Index {
     /** 插入内部逻辑（无锁） */
     private void insertInternal(VectorPoint point) {
         String id = point.getId();
-        int level = randomLevel();
+        // 对已存在的 id 再插入（= upsert）时沿用旧节点的层数：别的节点的高层邻居表已经引用了这个 id，
+        // 换一个新随机层就把图弄坏了 —— 新节点若是 level 0，所有 "layer≥1 邻居表 → 该 id" 的引用
+        // 会指向一个 neighbors 数组长度只有 1 的节点，遍历到它就抛 AIOOBE。
+        Node previous = nodes.get(id);
+        int level = previous != null ? previous.level : randomLevel();
         Node node = new Node(id, point.getVector(), level);
         node.payloadRef = point.getPayload();
         nodes.put(id, node);
@@ -262,17 +276,22 @@ public class HnswIndex implements Index {
         String[] epSet = new String[]{ep};
         for (int l = Math.min(level, maxLevel); l >= 0; l--) {
             SearchResult[] candidates = searchLayer(query, epSet, efConstruction, l);
-            // 选择 M 个最近的节点作为邻居
-            List<SearchResult> neighbors = selectNeighbors(candidates, M);
+            // 第 0 层是搜索真正落地的地方，标准 HNSW 给它 2M 的度上限（M_max0 = 2M）；
+            // 只留 M 条边会让 layer 0 的可达性随数据量变差（实测同一套参数 recall
+            // 从 n=5000 的 0.816 掉到 n=20000 的 0.58）。正反两个方向都按这个上限走，
+            // 只放宽反向修剪会让新节点在 layer 0 依然只连 M 条边。
+            int maxNb = (l == 0) ? 2 * M : M;
+            // 选择 maxNb 个最近的节点作为邻居
+            List<SearchResult> neighbors = selectNeighbors(candidates, maxNb);
             connect(node, neighbors, l);
             // 反向：把新节点加入候选邻居的邻居列表
             for (SearchResult nb : neighbors) {
                 Node nbNode = nodes.get(nb.getVectorId());
                 if (nbNode != null && nbNode.neighbors[l] != null) {
                     nbNode.neighbors[l].add(new SearchResult(id, nb.getScore()));
-                    // 修剪邻居列表到 M 个
-                    if (nbNode.neighbors[l].size() > M) {
-                        pruneNeighbors(nbNode, l, M);
+                    // 修剪邻居列表到该层的上限
+                    if (nbNode.neighbors[l].size() > maxNb) {
+                        pruneNeighbors(nbNode, l, maxNb);
                     }
                 }
             }
@@ -371,18 +390,28 @@ public class HnswIndex implements Index {
                     Math.max(efSearch, topK), 0);
 
             // 过滤 + 排序 + topK
-            List<SearchResult> filtered = new ArrayList<>(efCandidates.length);
+            //
+            // searchLayer 内部用 SearchResult 只当作 (id, score) 的候选载体，payload 恒为空。
+            // 这里必须从 Node.payloadRef 把真实 payload 取回来：
+            //   - matchesFilter 读的就是 r.getPayload()，不挂回去则任何带 filterPayload 的
+            //     查询在 HNSW 上恒为 0 命中（FlatIndex 却正常，两条路径语义不一致）；
+            //   - 上层 Collection.search 也是先拿 raw 结果再 filter.evaluate(r.getPayload())。
+            // 只在最终 topK 上构造带 payload 的对象，避免为 ef 个候选各复制一份 map。
+            List<SearchResult> scored = new ArrayList<>(efCandidates.length);
             for (SearchResult r : efCandidates) {
                 if (tombstones.contains(r.getVectorId())) continue;
                 if (r.getScore() > maxDistance) continue;
-                if (filterPayload != null && !matchesFilter(r, filterPayload)) continue;
-                filtered.add(r);
+                Node n = nodes.get(r.getVectorId());
+                if (n == null) continue;
+                Map<String, Object> payload = n.payloadRef;
+                if (filterPayload != null && !matchesFilter(payload, filterPayload)) continue;
+                scored.add(new SearchResult(n.id, r.getScore(), payload));
             }
-            filtered.sort(Comparator.comparingDouble(SearchResult::getScore));
-            if (filtered.size() > topK) {
-                filtered = filtered.subList(0, topK);
+            scored.sort(Comparator.comparingDouble(SearchResult::getScore));
+            if (scored.size() > topK) {
+                scored = new ArrayList<>(scored.subList(0, topK));
             }
-            return filtered;
+            return scored;
         } finally {
             lock.readLock().unlock();
         }
@@ -422,7 +451,11 @@ public class HnswIndex implements Index {
                 break; // 当前最近候选比结果中最远的还远，停止
             }
             Node currNode = nodes.get(curr.getVectorId());
-            if (currNode == null || currNode.neighbors[level] == null) continue;
+            // 只判 null 挡不住越界：Node.neighbors 的长度恰好是 level+1，所以"被某层邻居表引用、
+            // 自身层数却更低"的节点在这里直接抛 AIOOBE（remove() 不清理反向引用、持久化恢复也
+            // 不校验引用双方的层数）。层数不够 ⇒ 这一层没有它的份，跳过扩展即可。
+            if (currNode == null || level >= currNode.neighbors.length
+                    || currNode.neighbors[level] == null) continue;
 
             for (SearchResult neighbor : currNode.neighbors[level]) {
                 if (visited.contains(neighbor.getVectorId())) continue;
@@ -480,10 +513,11 @@ public class HnswIndex implements Index {
         return (int) Math.min(r, MAX_LEVEL);
     }
 
-    private boolean matchesFilter(SearchResult r, Map<String, Object> filter) {
-        Map<String, Object> payload = r.getPayload();
+    /** 与 FlatIndex.matchesFilter 同语义：缺失的 key 视为 null，不匹配任何非 null 值 */
+    private static boolean matchesFilter(Map<String, Object> payload, Map<String, Object> filter) {
         for (Map.Entry<String, Object> entry : filter.entrySet()) {
-            if (!Objects.equals(payload.get(entry.getKey()), entry.getValue())) {
+            Object actual = payload == null ? null : payload.get(entry.getKey());
+            if (!Filter.valuesMatch(actual, entry.getValue())) {
                 return false;
             }
         }

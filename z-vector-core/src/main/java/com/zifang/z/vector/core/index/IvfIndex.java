@@ -1,5 +1,6 @@
 package com.zifang.z.vector.core.index;
 
+import com.zifang.z.vector.api.Filter;
 import com.zifang.z.vector.api.SearchResult;
 import com.zifang.z.vector.api.VectorPoint;
 import com.zifang.z.vector.core.cluster.KMeansAdapter;
@@ -98,11 +99,15 @@ public class IvfIndex implements Index {
     @Override
     public int dimension() { return dimension; }
 
+    /** 同 HnswIndex：remove 已物理删点，tombstones 只是倒排列表残留引用的挡板，不能再减一次 */
     @Override
-    public int size() { return points.size() - tombstones.size(); }
+    public int size() { return points.size(); }
 
     @Override
     public boolean isBuilt() { return built; }
+
+    /** 暴露聚类簇数（与 {@link HnswIndex#getM()} 对称，供恢复校验与自省使用）。 */
+    public int getNlist() { return nlist; }
 
     public int getNprobe() { return nprobe; }
     public void setNprobe(int nprobe) {
@@ -222,7 +227,7 @@ public class IvfIndex implements Index {
                 if (p == null) continue;
                 if (filterPayload != null && !matchesFilter(p, filterPayload)) continue;
 
-                float dist = distance.compute(query, p.getVector());
+                float dist = distance.compute(query, p.vectorRef());
                 if (dist > maxDistance) continue;
                 candidates.add(new SearchResult(id, dist, p.getPayload()));
             }
@@ -282,7 +287,8 @@ public class IvfIndex implements Index {
     private boolean matchesFilter(VectorPoint p, Map<String, Object> filter) {
         Map<String, Object> payload = p.getPayload();
         for (Map.Entry<String, Object> entry : filter.entrySet()) {
-            if (!Objects.equals(payload.get(entry.getKey()), entry.getValue())) {
+            // 与 Filter.evaluate 同语义（数值宽容），否则下推过滤和 post-filter 会给出两套结果
+            if (!Filter.valuesMatch(payload.get(entry.getKey()), entry.getValue())) {
                 return false;
             }
         }

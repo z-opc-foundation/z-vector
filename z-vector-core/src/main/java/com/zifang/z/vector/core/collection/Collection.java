@@ -7,6 +7,9 @@ import com.zifang.z.vector.api.SearchResult;
 import com.zifang.z.vector.api.VectorCollection;
 import com.zifang.z.vector.api.VectorException;
 import com.zifang.z.vector.api.VectorPoint;
+import com.zifang.z.vector.core.distance.Distance;
+import com.zifang.z.vector.core.distance.DistanceFactory;
+import com.zifang.z.vector.core.filter.PayloadIndex;
 import com.zifang.z.vector.core.index.Index;
 import com.zifang.z.vector.core.index.IndexFactory;
 import org.slf4j.Logger;
@@ -14,9 +17,12 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -53,16 +59,31 @@ public class Collection {
 
     private static final Logger LOG = LoggerFactory.getLogger(Collection.class);
 
+    /** 过滤搜索时每轮的候选放大倍数（见 {@link #filteredSearch}） */
+    private static final int FILTER_OVERFETCH = 8;
+
     private final VectorCollection schema;
     private Index index;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private volatile boolean indexDirty = false;
     private volatile long lastFlushTimestamp = 0;
 
+    /**
+     * payload 倒排索引（field → value → ids）。默认开启：所有标量 payload 字段都登记。
+     * 用于把"过滤后的最近邻"从"扫全量 / 放大候选"降级成"只对命中集算距离"。
+     */
+    private final PayloadIndex payloadIndex = new PayloadIndex();
+    private final Distance distance;
+    /** 已登记进 payloadIndex 的点数；与 index.size() 不等即视为不同步，快路径不作数 */
+    private int payloadTracked = 0;
+    /** 观测用：走 payload 倒排快路径的次数（测试据此断言快路径真的被走到） */
+    private final AtomicLong payloadFastPath = new AtomicLong();
+
     public Collection(VectorCollection schema) {
         this.schema = Objects.requireNonNull(schema, "schema");
         this.index = IndexFactory.create(schema.getIndexType(), schema.getMetric(),
                 schema.getDimension(), schema.getConfig());
+        this.distance = DistanceFactory.create(schema.getMetric());
     }
 
     public VectorCollection getSchema() { return schema; }
@@ -77,8 +98,7 @@ public class Collection {
         validateDimension(point);
         lock.writeLock().lock();
         try {
-            index.add(point);
-            indexDirty = true;
+            upsertLocked(point);
         } finally {
             lock.writeLock().unlock();
         }
@@ -90,11 +110,28 @@ public class Collection {
         try {
             for (VectorPoint p : batch) {
                 validateDimension(p);
-                index.add(p);
+                upsertLocked(p);
             }
-            indexDirty = true;
         } finally {
             lock.writeLock().unlock();
+        }
+    }
+
+    /** upsert 的公共部分：写向量索引 + 同步 payload 倒排（调用方持写锁） */
+    private void upsertLocked(VectorPoint point) {
+        VectorPoint previous = index.get(point.getId());
+        index.add(point);
+        indexDirty = true;
+        if (previous == null) {
+            payloadTracked++;
+        } else {
+            unindexPayload(previous);
+        }
+        Map<String, Object> payload = point.getPayload();
+        if (payload != null) {
+            for (Map.Entry<String, Object> e : payload.entrySet()) {
+                if (isIndexable(e.getValue())) payloadIndex.index(e.getKey(), e.getValue(), point.getId());
+            }
         }
     }
 
@@ -105,11 +142,14 @@ public class Collection {
     public boolean delete(String id) {
         lock.writeLock().lock();
         try {
-            if (index.remove(id)) {
-                indexDirty = true;
-                return true;
+            VectorPoint existing = index.get(id);
+            if (!index.remove(id)) return false;
+            if (existing != null) {
+                unindexPayload(existing);
+                payloadTracked--;
             }
-            return false;
+            indexDirty = true;
+            return true;
         } finally {
             lock.writeLock().unlock();
         }
@@ -120,7 +160,12 @@ public class Collection {
         lock.writeLock().lock();
         try {
             for (String id : ids) {
+                VectorPoint existing = index.get(id);
                 if (index.remove(id)) {
+                    if (existing != null) {
+                        unindexPayload(existing);
+                        payloadTracked--;
+                    }
                     indexDirty = true;
                 }
             }
@@ -138,36 +183,99 @@ public class Collection {
     public List<SearchResult> search(float[] query, int topK, Filter filter) {
         validateQuery(query);
         if (topK <= 0) return Collections.emptyList();
-
-        // 复杂 Filter（AND/OR/NOT/范围）在搜索时直接 evaluate 每个点的 payload
-        // 简单等值过滤优先走索引层（更快），如果索引层不支持再 fallback
-        List<SearchResult> raw = index.search(query, topK, null, Float.MAX_VALUE);
-        if (filter == null) return raw;
-
-        List<SearchResult> filtered = new ArrayList<>();
-        for (SearchResult r : raw) {
-            if (filter.evaluate(r.getPayload())) {
-                filtered.add(r);
-            }
+        if (filter == null) {
+            return index.search(query, topK, null, Float.MAX_VALUE);
         }
-        return filtered;
+        return filteredSearch(query, topK, filter, Float.MAX_VALUE);
     }
 
     public List<SearchResult> searchRange(float[] query, float maxDistance, int topK,
                                           Filter filter) {
         validateQuery(query);
         if (topK <= 0) return Collections.emptyList();
-
-        List<SearchResult> raw = index.searchRange(query, maxDistance, topK, null);
-        if (filter == null) return raw;
-
-        List<SearchResult> filtered = new ArrayList<>();
-        for (SearchResult r : raw) {
-            if (filter.evaluate(r.getPayload())) {
-                filtered.add(r);
-            }
+        if (filter == null) {
+            return index.searchRange(query, maxDistance, topK, null);
         }
-        return filtered;
+        return filteredSearch(query, topK, filter, maxDistance);
+    }
+
+    /**
+     * 带 payload 过滤的搜索 — 核心约束：<b>不能"只问索引要 topK 条、然后 post-filter"</b>。
+     * <p>
+     * 那种写法等价于"先取最近的 10 个点，再从这 10 个点里挑 lang='zh' 的"：只要过滤条件有
+     * 一点点选择性，返回行数就断崖掉到 0~2 行，而用户要的语义是<b>"过滤之后</b>的最近邻"。
+     * HNSW 上更糟 — 它的 filter 在 ef 窗口内生效，命中数与窗口外的匹配点完全无关。
+     * <p>
+     * 现在的做法：
+     * <ol>
+     *   <li>纯等值条件（{@link Filter#toFlatPayload()}）下推进索引层，让图遍历 / 簇扫描时
+     *       就跳过不匹配的点，不必白算距离；</li>
+     *   <li>候选不足 topK 时按 {@link #FILTER_OVERFETCH} 倍放大重取，直到取满 topK，
+     *       或已经问遍了索引里的每一个点。</li>
+     * </ol>
+     * 代价：过滤越挑剔，越接近全量扫描（最坏 O(N)，与 Flat 暴力扫同量级）。在没有 payload
+     * 倒排索引的前提下这是"过滤结果正确"的必要成本 — 宁可慢，不可静默少返回。
+     * <p>
+     * <b>终止条件里不能用 {@code raw.size() < fetch}</b>（看起来像"索引已经没有更多候选了"）：
+     * 对 HNSW / IVF 这类窗口型索引，短返回只说明"ef / nprobe 窗口里匹配的少"，窗口外还有
+     * 大量匹配点；实测 1.3% 命中率的过滤会因此被误判为"取尽了"而返回 0 行。只有
+     * {@code fetch >= size} 才真的代表问遍了全量。
+     */
+    private List<SearchResult> filteredSearch(float[] query, int topK, Filter filter,
+                                              float maxDistance) {
+        List<SearchResult> fast = payloadFilteredSearch(query, topK, filter, maxDistance);
+        if (fast != null) return fast;
+
+        Map<String, Object> pushdown = filter.toFlatPayload();
+        int size = index.size();
+        int fetch = Math.max(topK,
+                (int) Math.min((long) topK * FILTER_OVERFETCH, Math.max((long) size, topK)));
+        List<SearchResult> out;
+        while (true) {
+            List<SearchResult> raw = index.searchRange(query, maxDistance, fetch, pushdown);
+            out = new ArrayList<>(Math.min(topK, raw.size()));
+            for (SearchResult r : raw) {          // raw 已按距离升序
+                if (filter.evaluate(r.getPayload())) {
+                    out.add(r);
+                    if (out.size() == topK) break;
+                }
+            }
+            if (out.size() >= topK || fetch >= size) return out;
+            fetch = (int) Math.min((long) fetch * FILTER_OVERFETCH, (long) size);
+        }
+    }
+
+    /**
+     * payload 倒排快路径：先把 Filter 翻译成命中 id 集合，只对这集合算距离。
+     * <p>
+     * 与 {@link #filteredSearch} 的放大候选路径相比，它给出的是<b>精确</b>的"过滤后最近邻"
+     * （没有 ANN 窗口漏点的问题），代价是 O(命中数) 次距离计算 —— 所以只在命中集"够小"时
+     * 采用；命中集接近全量时，在图上跑一遍窗口反而更便宜，返回 {@code null} 让给慢路径。
+     *
+     * @return 精确结果；{@code null} 表示"这次答不了"，调用方走慢路径
+     */
+    private List<SearchResult> payloadFilteredSearch(float[] query, int topK, Filter filter,
+                                                     float maxDistance) {
+        Set<String> ids = resolvePayload(filter);
+        if (ids == null) return null;
+        int size = index.size();
+        if (ids.size() > Math.max((long) topK * FILTER_OVERFETCH, size / 64)) return null;
+
+        List<SearchResult> hits = new ArrayList<>(Math.min(topK * 2, ids.size()));
+        for (String id : ids) {
+            VectorPoint p = index.get(id);
+            if (p == null) {
+                // 倒排说"有这个点"、向量索引说"没有" ⇒ 两边不同步，宁可整体退回慢路径，
+                // 也不要拿半截结果冒充精确答案
+                return null;
+            }
+            float d = distance.compute(query, p.vectorRef());
+            if (d > maxDistance) continue;
+            hits.add(new SearchResult(id, d, p.getPayload()));
+        }
+        hits.sort(Comparator.comparingDouble(SearchResult::getScore));
+        payloadFastPath.incrementAndGet();
+        return hits.size() > topK ? new ArrayList<>(hits.subList(0, topK)) : hits;
     }
 
     public List<List<SearchResult>> searchBatch(List<float[]> queries, int topK, Filter filter) {
@@ -214,6 +322,7 @@ public class Collection {
             newIndex.build(this.index.entries());
             this.index = newIndex;
             this.indexDirty = false;
+            rebuildPayloadIndex();
         } finally {
             lock.writeLock().unlock();
         }
@@ -241,6 +350,7 @@ public class Collection {
             }
             this.index = newIndex;
             this.indexDirty = false;
+            rebuildPayloadIndex();
             LOG.info("Index replaced for collection '{}': dim={}, size={}, built={}",
                     getName(), newIndex.dimension(), newIndex.size(), newIndex.isBuilt());
         } finally {
@@ -258,11 +368,67 @@ public class Collection {
         lock.writeLock().lock();
         try {
             index.clear();
+            payloadIndex.clear();
+            payloadTracked = 0;
             indexDirty = false;
         } finally {
             lock.writeLock().unlock();
         }
     }
+
+    // ==================== payload 倒排索引 ====================
+
+    /** 只有标量值可进倒排；List / Map 类型的 payload 由 post-filter 路径处理 */
+    private static boolean isIndexable(Object v) {
+        return v instanceof String || v instanceof Number || v instanceof Boolean;
+    }
+
+    private void unindexPayload(VectorPoint p) {
+        Map<String, Object> payload = p.getPayload();
+        if (payload == null) return;
+        for (Map.Entry<String, Object> e : payload.entrySet()) {
+            if (isIndexable(e.getValue())) payloadIndex.remove(e.getKey(), e.getValue(), p.getId());
+        }
+    }
+
+    /**
+     * 从向量索引里现存的全部点重建倒排。
+     * <p>
+     * 只用在"索引整体被换掉"的场合（switchIndex / recover 后的 replaceIndex）。
+     * 注意：如果换进来的索引没带 payload（HNSW 快照恢复就是这种情况，见
+     * {@code HnswPersistence}），这里会得到一个空的倒排表 —— 此时 {@link #resolvePayload}
+     * 返回 null，过滤搜索自动退回放大候选的慢路径，<b>不会</b>给出错误结果。
+     */
+    private void rebuildPayloadIndex() {
+        payloadIndex.clear();
+        payloadTracked = 0;
+        for (VectorPoint p : index.entries()) {
+            payloadTracked++;
+            Map<String, Object> payload = p.getPayload();
+            if (payload == null) continue;
+            for (Map.Entry<String, Object> e : payload.entrySet()) {
+                if (isIndexable(e.getValue())) payloadIndex.index(e.getKey(), e.getValue(), p.getId());
+            }
+        }
+    }
+
+    /**
+     * 用 payload 倒排把 Filter 翻译成命中 id 集合。
+     * 返回 {@code null} 表示"倒排答不了或不可信"，调用方必须走放大候选的通用路径。
+     */
+    private Set<String> resolvePayload(Filter filter) {
+        if (payloadTracked != index.size()) {
+            // 与向量索引不同步（例如外部直接换过 index）——倒排里少点，拿它答就会静默少返回
+            return null;
+        }
+        return payloadIndex.resolve(filter);
+    }
+
+    /** 观测：走 payload 倒排快路径的次数 */
+    public long payloadFastPathHits() { return payloadFastPath.get(); }
+
+    /** 观测：倒排里已登记的字段数 */
+    public int payloadIndexedFields() { return payloadIndex.size(); }
 
     // ==================== 内部校验 ====================
 

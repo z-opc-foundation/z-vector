@@ -31,6 +31,19 @@ public class VectorPoint {
     public int getDimension() { return vector.length; }
     public Map<String, Object> getPayload() { return Collections.unmodifiableMap(payload); }
 
+    /**
+     * 内部引用版访问器 —— <b>不拷贝</b>，仅供索引扫描这类热路径使用。
+     * <p>
+     * {@link #getVector()} 每次返回一份克隆：n=5000、dim=64 的暴力扫单是一次查询要拷
+     * 1.25MB、外加 5000 个数组对象（实测 1.9MB/查询，见 AnnBench 的 bytes_per_query）。
+     * <b>调用方约定</b>：拿到的数组/map 不得修改、不得保存到 point 之外（逃逸）——
+     * 它就是存储本体。对外 API 仍走 {@link #getVector()} / {@link #getPayload()}。
+     */
+    public float[] vectorRef() { return vector; }
+
+    /** 内部引用版 payload 访问器，约定同上（不包装、不拷贝）。 */
+    public Map<String, Object> payloadRef() { return payload; }
+
     public Object getPayload(String key) { return payload.get(key); }
 
     public VectorPoint setPayload(String key, Object value) {

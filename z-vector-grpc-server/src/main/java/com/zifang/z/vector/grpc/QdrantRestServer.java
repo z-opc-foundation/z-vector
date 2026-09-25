@@ -14,6 +14,7 @@ import com.zifang.z.vector.api.VectorStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -24,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
+import java.util.regex.Pattern;
 
 /**
  * Qdrant REST 兼容 API 服务器 — 轻量级 HTTP 层。
@@ -56,6 +58,19 @@ import java.util.concurrent.Executors;
 public class QdrantRestServer {
 
     private static final Logger log = LoggerFactory.getLogger(QdrantRestServer.class);
+
+    /**
+     * 路由 pattern 预编译。{@code String.matches} 每次调用都会 {@code Pattern.compile}，
+     * 一个请求要走 5 次，等于每请求白建 5 个自动机。
+     */
+    private static final Pattern P_COLLECTION = Pattern.compile("/collections/[A-Za-z0-9_\\-]+");
+    private static final Pattern P_SEARCH = Pattern.compile("/collections/.+/points/search");
+    private static final Pattern P_COUNT = Pattern.compile("/collections/.+/points/count");
+    private static final Pattern P_POINTS_BATCH = Pattern.compile("/collections/.+/points");
+    private static final Pattern P_POINT_BY_ID = Pattern.compile("/collections/.+/points/.+");
+
+    private static final String PREFIX_COLLECTIONS = "/collections/";
+    private static final String MARKER_POINTS = "/points/";
 
     private final VectorStore store;
     private final ObjectMapper json = new ObjectMapper();
@@ -106,8 +121,8 @@ public class QdrantRestServer {
                 return;
             }
             // /collections/{name}
-            if (path.matches("/collections/[A-Za-z0-9_\\-]+")) {
-                String name = path.substring("/collections/".length());
+            if (P_COLLECTION.matcher(path).matches()) {
+                String name = path.substring(PREFIX_COLLECTIONS.length());
                 if ("PUT".equals(method)) {
                     handleCreateCollection(exchange, name);
                 } else if ("GET".equals(method)) {
@@ -120,7 +135,7 @@ public class QdrantRestServer {
                 return;
             }
             // /collections/{name}/points/search
-            if (path.matches("/collections/.+/points/search")) {
+            if (P_SEARCH.matcher(path).matches()) {
                 String name = extractCollectionName(path, "/points/search");
                 if ("POST".equals(method)) {
                     handleSearch(exchange, name);
@@ -130,7 +145,7 @@ public class QdrantRestServer {
                 return;
             }
             // /collections/{name}/points/count
-            if (path.matches("/collections/.+/points/count")) {
+            if (P_COUNT.matcher(path).matches()) {
                 String name = extractCollectionName(path, "/points/count");
                 if ("GET".equals(method)) {
                     handlePointCount(exchange, name);
@@ -140,8 +155,9 @@ public class QdrantRestServer {
                 return;
             }
             // /collections/{name}/points (PUT = upsert batch)
-            if (path.matches("/collections/.+/points")) {
-                String name = extractCollectionName(path, "/points");
+            if (P_POINTS_BATCH.matcher(path).matches()) {
+                String name = path.substring(PREFIX_COLLECTIONS.length(),
+                        path.length() - "/points".length());
                 if ("PUT".equals(method)) {
                     handleUpsertPoints(exchange, name);
                 } else {
@@ -150,9 +166,10 @@ public class QdrantRestServer {
                 return;
             }
             // /collections/{name}/points/{id}
-            if (path.matches("/collections/.+/points/.+")) {
-                String name = extractCollectionName(path, "/points/");
-                String id = path.substring(path.lastIndexOf('/') + 1);
+            if (P_POINT_BY_ID.matcher(path).matches()) {
+                int marker = path.indexOf(MARKER_POINTS);
+                String name = path.substring(PREFIX_COLLECTIONS.length(), marker);
+                String id = path.substring(marker + MARKER_POINTS.length());
                 if ("GET".equals(method)) {
                     handleGetPoint(exchange, name, id);
                 } else if ("DELETE".equals(method)) {
@@ -183,7 +200,7 @@ public class QdrantRestServer {
         @SuppressWarnings("unchecked")
         Map<String, Object> indexParams = (Map<String, Object>) body.get("index_params");
         store.createCollection(name, dimension, metric, indexType, indexParams);
-        sendJson(exchange, 200, Map.of("status", "ok", "name", name));
+        sendJson(exchange, 200, mapOf("status", "ok", "name", name));
     }
 
     private void handleGetCollection(HttpExchange exchange, String name) throws IOException {
@@ -205,7 +222,7 @@ public class QdrantRestServer {
     private void handleDeleteCollection(HttpExchange exchange, String name) throws IOException {
         boolean removed = store.deleteCollection(name);
         if (removed) {
-            sendJson(exchange, 200, Map.of("status", "ok"));
+            sendJson(exchange, 200, mapOf("status", "ok"));
         } else {
             sendError(exchange, 404, "Collection not found: " + name);
         }
@@ -240,7 +257,7 @@ public class QdrantRestServer {
             points.add(new VectorPoint(id, vector, payload));
         }
         store.upsertBatch(name, points);
-        sendJson(exchange, 200, Map.of("status", "ok", "count", points.size()));
+        sendJson(exchange, 200, mapOf("status", "ok", "count", points.size()));
     }
 
     private void handleGetPoint(HttpExchange exchange, String name, String id) throws IOException {
@@ -259,14 +276,14 @@ public class QdrantRestServer {
     private void handleDeletePoint(HttpExchange exchange, String name, String id) throws IOException {
         boolean removed = store.deletePoint(name, id);
         if (removed) {
-            sendJson(exchange, 200, Map.of("status", "ok"));
+            sendJson(exchange, 200, mapOf("status", "ok"));
         } else {
             sendError(exchange, 404, "Point not found: " + id);
         }
     }
 
     private void handlePointCount(HttpExchange exchange, String name) throws IOException {
-        sendJson(exchange, 200, Map.of("count", store.getPointCount(name)));
+        sendJson(exchange, 200, mapOf("count", store.getPointCount(name)));
     }
 
     private void handleSearch(HttpExchange exchange, String name) throws IOException {
@@ -363,14 +380,43 @@ public class QdrantRestServer {
     }
 
     private String extractCollectionName(String path, String suffix) {
-        String base = path.substring("/collections/".length());
+        String base = path.substring(PREFIX_COLLECTIONS.length());
+        if (!base.endsWith(suffix)) {
+            throw new VectorException("Malformed collection path: " + path);
+        }
         return base.substring(0, base.length() - suffix.length());
+    }
+
+    /**
+     * Java 8 兼容的 {@code Map.of} 替身 — 本模块 target 为 1.8，而 {@code Map.of}
+     * 是 Java 9 才有的 API（编译期不报错，运行期在 8-jre 上 NoSuchMethodError）。
+     */
+    private static Map<String, Object> mapOf(Object... kv) {
+        if ((kv.length & 1) != 0) {
+            throw new IllegalArgumentException("mapOf requires an even number of arguments");
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i < kv.length; i += 2) {
+            m.put(String.valueOf(kv[i]), kv[i + 1]);
+        }
+        return m;
+    }
+
+    /** Java 8 兼容的 {@code InputStream.readAllBytes} 替身。 */
+    private static byte[] readAll(InputStream is) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream(1024);
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = is.read(buf)) > 0) {
+            bos.write(buf, 0, n);
+        }
+        return bos.toByteArray();
     }
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> parseJson(HttpExchange exchange) throws IOException {
         try (InputStream is = exchange.getRequestBody()) {
-            byte[] bytes = is.readAllBytes();
+            byte[] bytes = readAll(is);
             if (bytes.length == 0) return new LinkedHashMap<>();
             return json.readValue(bytes, Map.class);
         }

@@ -95,12 +95,13 @@ class WalFileRotationTest {
             try {
                 List<WalRecord> all = wal2.readAll();
                 assertEquals(80, all.size());
-                // 顺序应保持（按写入顺序），用 timestamp 单调性代替
-                long prev = Long.MIN_VALUE;
-                for (int i = 0; i < 80; i++) {
-                    long ts = all.get(i).getTimestamp();
-                    assertTrue(ts >= prev, "timestamps must be monotonic at " + i);
-                    prev = ts;
+                // 用记录自带的 seq 做全序断言。此前这里比的是 getTimestamp()，
+                // 而同一次循环里 currentTimeMillis() 常常同毫秒 => 任意顺序都成立，
+                // 段被倒过来重放时这个用例依然全绿。
+                for (int i = 0; i < all.size(); i++) {
+                    String payload = all.get(i).getPayload();
+                    assertEquals("{\"seq\":" + i + "}", payload,
+                            "重放顺序必须等于写入顺序，位置 " + i + " 实际是 " + payload);
                 }
             } finally {
                 wal2.close();

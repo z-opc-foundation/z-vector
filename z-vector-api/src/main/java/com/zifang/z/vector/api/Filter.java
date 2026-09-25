@@ -165,12 +165,12 @@ public class Filter {
         // 叶子节点
         Object fieldValue = payload == null ? null : payload.get(field);
         switch (op) {
-            case EQ: return Objects.equals(fieldValue, value);
-            case NE: return !Objects.equals(fieldValue, value);
-            case GT: return compareNumbers(fieldValue, value) > 0;
-            case GTE: return compareNumbers(fieldValue, value) >= 0;
-            case LT: return compareNumbers(fieldValue, value) < 0;
-            case LTE: return compareNumbers(fieldValue, value) <= 0;
+            case EQ: return valuesMatch(fieldValue, value);
+            case NE: return !valuesMatch(fieldValue, value);
+            case GT: { Integer c = compareNumbers(fieldValue, value); return c != null && c > 0; }
+            case GTE: { Integer c = compareNumbers(fieldValue, value); return c != null && c >= 0; }
+            case LT: { Integer c = compareNumbers(fieldValue, value); return c != null && c < 0; }
+            case LTE: { Integer c = compareNumbers(fieldValue, value); return c != null && c <= 0; }
             case EXISTS: return fieldValue != null;
             case IN: return inList(fieldValue);
             case NOT_IN: return !inList(fieldValue);
@@ -186,21 +186,43 @@ public class Filter {
     private boolean inList(Object fieldValue) {
         if (!(value instanceof Collection)) return false;
         for (Object v : (Collection<?>) value) {
-            if (Objects.equals(fieldValue, v)) return true;
+            if (valuesMatch(fieldValue, v)) return true;
         }
         return false;
     }
 
-    private static int compareNumbers(Object a, Object b) {
-        if (a == null || b == null) return Integer.MIN_VALUE;
+    /**
+     * 数值宽容的等值比较 — payload 的值来自 JSON，数字会被解析成 Integer / Long / Double
+     * 中"最省"的那一种，而过滤条件里手写的字面量往往是另一种（{@code Filter.eq("views", 1L)}
+     * 对上 Jackson 给出的 {@code Integer 1}）。纯粹的 {@code Objects.equals} 会把这类
+     * 相等判成不等，搜索静默返回 0 行。
+     */
+    public static boolean valuesMatch(Object actual, Object expected) {
+        if (Objects.equals(actual, expected)) return true;
+        if (actual instanceof Number && expected instanceof Number) {
+            double a = ((Number) actual).doubleValue();
+            double b = ((Number) expected).doubleValue();
+            return !Double.isNaN(a) && a == b;
+        }
+        return false;
+    }
+
+    /**
+     * 比较两个可排序值。返回 {@code null} 表示"不可比"——字段缺失、类型不同（数字 vs 字符串）
+     * 都算不可比。
+     * <p>
+     * <b>为什么必须用 null 而不是 {@code Integer.MIN_VALUE} 兜底</b>：MIN_VALUE 会让 {@code lt}
+     * / {@code lte} 对<b>根本没有这个字段</b>的文档判真，等于"缺字段 = 值最小"，把范围过滤
+     * 变成了"所有脏数据都命中"。SQL 里 NULL 参与比较的结果是 UNKNOWN（不命中），这里对齐。
+     */
+    private static Integer compareNumbers(Object a, Object b) {
         if (a instanceof Number && b instanceof Number) {
             return Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue());
         }
-        // 字符串比较
         if (a instanceof String && b instanceof String) {
             return ((String) a).compareTo((String) b);
         }
-        return Integer.MIN_VALUE;
+        return null;
     }
 
     @Override
@@ -240,17 +262,35 @@ public class Filter {
     }
 
     /**
-     * 转换为索引层可用的扁平 Map — 仅保留单层等值匹配（用于简单场景）。
+     * 提取可下推给索引层的"纯等值"条件 — 只有当整个表达式是单个 {@code EQ}，或者
+     * "若干个不同字段的 {@code EQ} 的 AND"时才返回 Map；其余一切形状返回 {@code null}，
+     * 由调用方在搜索结果上做 {@link #evaluate(Map)}。
      * <p>
-     * 复杂表达式（AND/OR/NOT/范围）应在搜索循环中通过 {@link #evaluate(Map)} 调用。
+     * <b>为什么收紧到只处理 EQ</b>：索引层的扁平 Map 语义是"这些 key 都得等于给定值"，
+     * 把 {@code NE / IN / EXISTS / CONTAINS} 也塞进同一个 Map（把 {@code field != v} 写成
+     * {@code {field: v}}）会让下推结果与表达式含义相反 — 过滤越严格反而返回不相关的点。
+     * <p>
+     * 复合 AND 里出现同字段的两个 EQ（{@code a=1 AND a=2}）同样不下推：合并后只剩一条，
+     * 会把恒假的条件变成可命中。
      */
     public Map<String, Object> toFlatPayload() {
-        if (this.field != null && (op == Op.EQ || op == Op.NE || op == Op.IN || op == Op.NOT_IN
-                || op == Op.EXISTS || op == Op.CONTAINS)) {
+        if (field != null) {
+            if (op != Op.EQ) return null;
             Map<String, Object> m = new LinkedHashMap<>();
             m.put(field, value);
             return m;
         }
-        return null;
+        // field == null：AND / OR / NOT 节点
+        if (op != Op.EQ || children.isEmpty()) return null;   // OR / NOT / 空 AND 不可等值下推
+        Map<String, Object> merged = new LinkedHashMap<>();
+        for (Filter child : children) {
+            Map<String, Object> sub = child.toFlatPayload();
+            if (sub == null) return null;
+            for (Map.Entry<String, Object> e : sub.entrySet()) {
+                if (merged.containsKey(e.getKey())) return null;
+                merged.put(e.getKey(), e.getValue());
+            }
+        }
+        return merged;
     }
 }

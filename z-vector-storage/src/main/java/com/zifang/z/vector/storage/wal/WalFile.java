@@ -43,12 +43,19 @@ import java.util.zip.CRC32;
  * <h2>线程安全</h2>
  * 内部使用 synchronized 保护写入；读取在启动时单线程执行。
  */
-public class WalFile {
+public class WalFile implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(WalFile.class);
 
     /** 默认 WAL 段大小上限（超过则 rotate）。16MB 对标 RocksDB 默认值。 */
     public static final long DEFAULT_MAX_SEGMENT_SIZE = 16 * 1024 * 1024;
+
+    /**
+     * 单条记录 payload 上限。读到超长/负数长度说明流已错位，必须作为 IOException 报错
+     * （{@code parseRecords} 会停在这里），而不是让 {@code new byte[n]} 抛
+     * NegativeArraySizeException 冲出整个恢复流程。
+     */
+    static final int MAX_PAYLOAD_SIZE = 64 * 1024 * 1024;
 
     private final Path walPath;
     private final Path dir;
@@ -134,12 +141,15 @@ public class WalFile {
     }
 
     /**
-     * 读取所有段的记录（启动恢复用，按段序号顺序重放）。
+     * 读取所有段的记录（启动恢复用，按写入先后顺序重放）。
+     * <p>
+     * {@code rotate()} 每次把 wal.log 改名成 wal_&lt;递增序号&gt;.log，因此 wal_1 最旧、
+     * wal_N 最新、wal.log 次新。重放必须从 1 递增，否则后写入的 upsert 会被先写入的覆盖。
      */
     public List<WalRecord> readAll() throws IOException {
         List<WalRecord> records = new ArrayList<>();
-        // 1. 先重放历史段（wal_N.log 倒序到 wal_1.log）
-        for (int i = segmentIndex; i >= 1; i--) {
+        // 1. 先重放历史段（wal_1.log 最旧 → wal_N.log 最新）
+        for (int i = 1; i <= segmentIndex; i++) {
             Path seg = dir.resolve("wal_" + i + ".log");
             if (Files.exists(seg)) {
                 records.addAll(readSegment(seg));
@@ -259,48 +269,68 @@ public class WalFile {
     }
 
     private WalRecord deserialize(DataInputStream dis) throws IOException {
+        // 逐字段读取的同时镜像一份原始字节，用于按 serialize() 同样的范围复算 CRC32
+        ByteArrayOutputStream raw = new ByteArrayOutputStream(64);
+        DataOutputStream ro = new DataOutputStream(raw);
+
         byte[] magic = new byte[4];
         dis.readFully(magic);
+        ro.write(magic);
         String magicStr = new String(magic, StandardCharsets.US_ASCII);
         if (!WalRecord.MAGIC.equals(magicStr)) {
             throw new VectorException("Invalid WAL magic: " + magicStr);
         }
         byte opCode = dis.readByte();
+        ro.writeByte(opCode);
         long timestamp = dis.readLong();
+        ro.writeLong(timestamp);
         short nameLen = dis.readShort();
+        ro.writeShort(nameLen);
+        if (nameLen < 0) {
+            throw new IOException("Invalid WAL name length: " + nameLen);
+        }
         byte[] nameBytes = new byte[nameLen];
         dis.readFully(nameBytes);
+        ro.write(nameBytes);
         String collection = new String(nameBytes, StandardCharsets.UTF_8);
         int payloadLen = dis.readInt();
+        ro.writeInt(payloadLen);
+        if (payloadLen < 0 || payloadLen > MAX_PAYLOAD_SIZE) {
+            throw new IOException("Invalid WAL payload length: " + payloadLen);
+        }
         byte[] payloadBytes = new byte[payloadLen];
         dis.readFully(payloadBytes);
+        ro.write(payloadBytes);
         String payload = new String(payloadBytes, StandardCharsets.UTF_8);
         int crcRead = dis.readInt();
 
-        // CRC 校验
-        // 重组前面所有字节计算 CRC（重新计算开销可忽略）
-        // 这里简化：跳过校验（生产环境应启用）
+        CRC32 crc = new CRC32();
+        crc.update(raw.toByteArray());
+        if ((int) crc.getValue() != crcRead) {
+            throw new IOException("WAL CRC mismatch for record at seq~" + sequenceNumber
+                    + " (collection=" + collection + ", computed="
+                    + Integer.toHexString((int) crc.getValue())
+                    + ", stored=" + Integer.toHexString(crcRead) + ")");
+        }
 
         WalOpType op = WalOpType.fromCode(opCode);
         return new WalRecord(op, timestamp, collection, payload);
     }
 
+    /**
+     * 统计当前段已有的记录数（打开时用于恢复 sequenceNumber）。
+     * <p>
+     * 必须与 {@link #readAll()} 采用<b>完全相同</b>的容错语义：遇到损坏记录就停在此处，
+     * 而不是把异常抛出构造流程。启用 CRC 校验之后，如果这里只接 {@code EOFException}，
+     * 一条坏记录会让 {@code new WalFile(...)} 直接失败 —— 把"尾部丢一条"升级成
+     * "整个库起不来"。共用同一次遍历也保证两者不会再各自漂移。
+     */
     private long countRecords() throws IOException {
-        long count = 0;
         if (raf.length() == 0) return 0;
         byte[] allBytes = new byte[(int) raf.length()];
         raf.seek(0);
         raf.readFully(allBytes);
-        try (DataInputStream dis = new DataInputStream(new ByteArrayInputStream(allBytes))) {
-            while (dis.available() > 0) {
-                try {
-                    WalRecord rec = deserialize(dis);
-                    count++;
-                } catch (EOFException e) {
-                    break;
-                }
-            }
-        }
+        long count = parseRecords(allBytes).size();
         // 重置指针到末尾（追加模式）
         raf.seek(raf.length());
         return count;

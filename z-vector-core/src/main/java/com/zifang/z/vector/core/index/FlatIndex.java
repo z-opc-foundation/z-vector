@@ -1,5 +1,6 @@
 package com.zifang.z.vector.core.index;
 
+import com.zifang.z.vector.api.Filter;
 import com.zifang.z.vector.api.SearchResult;
 import com.zifang.z.vector.api.VectorPoint;
 import com.zifang.z.vector.core.distance.Distance;
@@ -124,21 +125,40 @@ public class FlatIndex implements Index {
         if (topK <= 0) return Collections.emptyList();
         validateQuery(query);
 
-        List<SearchResult> candidates = new ArrayList<>(Math.min(topK * 2, points.size()));
+        // 有界 top-K 插入：扫描期零分配。旧写法每个点都要 clone 向量、包一层 unmodifiableMap、
+        // new 一个 SearchResult，最后对全量候选排序 —— 实测 n=5000/dim=64 一次查询分配 1.9MB
+        // （AnnBench 的 flat_l2_bytes_per_query）。
+        // 平局语义与"稳定排序后截断"保持一致：新点只在严格更优时才挤掉已收的点，
+        // 插入位置落在同分点的后面。
+        VectorPoint[] winners = new VectorPoint[topK];
+        float[] winnerDists = new float[topK];
+        int k = 0;
+        boolean hasTombstones = !tombstones.isEmpty();
         for (VectorPoint p : points.values()) {
-            if (tombstones.contains(p.getId())) continue;
+            if (hasTombstones && tombstones.contains(p.getId())) continue;
             if (filterPayload != null && !matchesFilter(p, filterPayload)) continue;
 
-            float dist = distance.compute(query, p.getVector());
+            float dist = distance.compute(query, p.vectorRef());
             if (dist > maxDistance) continue;
-            candidates.add(new SearchResult(p.getId(), dist, p.getPayload()));
+            if (k == topK) {
+                if (dist >= winnerDists[topK - 1]) continue;
+                k = topK - 1;
+            }
+            int pos = k++;
+            while (pos > 0 && winnerDists[pos - 1] > dist) {
+                winnerDists[pos] = winnerDists[pos - 1];
+                winners[pos] = winners[pos - 1];
+                pos--;
+            }
+            winnerDists[pos] = dist;
+            winners[pos] = p;
         }
 
-        candidates.sort(Comparator.comparingDouble(SearchResult::getScore));
-        if (candidates.size() > topK) {
-            candidates = candidates.subList(0, topK);
+        List<SearchResult> out = new ArrayList<>(k);
+        for (int i = 0; i < k; i++) {
+            out.add(new SearchResult(winners[i].getId(), winnerDists[i], winners[i].getPayload()));
         }
-        return candidates;
+        return out;
     }
 
     @Override
@@ -164,9 +184,10 @@ public class FlatIndex implements Index {
     }
 
     private boolean matchesFilter(VectorPoint p, Map<String, Object> filter) {
-        Map<String, Object> payload = p.getPayload();
+        Map<String, Object> payload = p.payloadRef();
         for (Map.Entry<String, Object> entry : filter.entrySet()) {
-            if (!Objects.equals(payload.get(entry.getKey()), entry.getValue())) {
+            // 与 Filter.evaluate 同语义（数值宽容），否则下推过滤和 post-filter 会给出两套结果
+            if (!Filter.valuesMatch(payload.get(entry.getKey()), entry.getValue())) {
                 return false;
             }
         }
