@@ -21,12 +21,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p><b>钉的是"每次距离计算分配多少字节"，不是耗时。</b> 同一份代码在本机两次运行的
  * ns/query 能差 1.5 倍（GC、JIT、邻居进程都在动），拿耗时当判据会得到一条随时翻红的门禁；
- * 而分配量只由代码结构决定 —— 实测同一套参数下三轮的 alloc/query 完全相同（优化前
- * 48,125、48,125、48,125；本轮 5,058、5,058、5,058）。
+ * 而分配量只由代码结构决定 —— 实测同一套参数下三轮的 alloc/query 完全相同（本轮重构后
+ * 433、433、433；四个批次一路是 48,125 → 13,494 → 5,058 → 433）。
  *
  * <p><b>为什么还要钉 distCalls/query。</b> 只钉分配量会留一条作弊路：少搜一点，分配自然降。
  * 这条带子把"搜索走的路径没变"钉住 —— 上界挡"贪心下降白做了"（layer 0 从顶层入口点起跑，
- * 同一个图、distCalls 从 176.6 涨到 249.9，alloc 也跟着涨），下界挡"beam 提前收工"。
+ * 同一个图、distCalls 从 176.6 涨到 249.9），下界挡"beam 提前收工"（156.3）。
+ * 到了每查询只剩 433 字节的今天，<b>字节这条尺已经看不见"多搜"了</b>：候选不再物化成对象，
+ * 多出来的四十次距离计算一个字节都不多花（实测 B/distCall 反而从 2.5 掉到 1.7），
+ * 所以轨迹必须由 distCalls 区间独立钉住，不能指望分配量顺带管到。
  *
  * <p>语料是聚簇的（真实 embedding 的形状）；i.i.d. 均匀随机向量所有点对距离都差不多，
  * 在那种数据上"搜得少"和"搜得对"分不出来。层级随机数播种 ⇒ 图可复现 ⇒ 门禁里的数字才钉得住。
@@ -46,21 +49,29 @@ class HnswQueryAllocationTest {
 
     /**
      * 本轮实测（同一台机器、同一份语料、三轮取值完全一致）：
-     * alloc=4,475 B/query、distCalls=176.6/query ⇒ 25.3 B/distCall。
+     * alloc=433 B/query、distCalls=176.6/query ⇒ 2.5 B/distCall。
      * <p>
-     * 阈值由变异电池（{@code ~/.cache/zv-alloc-teeth}）逐项卡出来，不是拍脑袋：把某项优化
-     * 撤掉后的读数必须落在红线之外，否则这条线挡不住任何回退。撤掉"beam 两个堆共享实例"
-     * 是 36.9，撤掉"空 payload 用共享单例"是 78.8 —— 都在线外。
+     * 阈值由变异电池（{@code ~/.cache/zv-alloc-teeth}）逐项卡出来，不是拍脑袋。这条线上一批
+     * 取的是 28.0，而实测撤掉优化的三个变异体分别落在 7.1 / 7.9 / 11.3 —— 也就是说<b>旧线对
+     * 本批优化的三倍回退完全视而不见</b>（三个 SURVIVED 全是这么来的）。取 4.0：距实测
+     * 2.5 有 60% 余量（换 JDK 关掉压缩指针、对象头 12B→16B 也顶不红），距最近的可检回退 7.1
+     * 还有 1.8 倍。
      * <p>
-     * 余量只有 10% 是因为剩下的分配本来就不多了（每次查询 4.5 KB 里最大的一块是 ef 个
-     * {@code SearchResult} 候选 + 三个 {@code Object[]}）。换 JDK 若关掉压缩指针，对象头
-     * 从 12B 变 16B 会把这条线顶红 —— 那时候要做的是重跑电池重新取值，而不是把数调大。
+     * 反方向也要记账：轨迹类变异体（撤掉贪心下降 2.0、Phase 2 从顶层入口点起跑 1.7、beam
+     * 提前收工 2.8）都<b>不该</b>红这条线 —— 它们涨的是距离计算次数而不是每字节的开销，
+     * 挡它们的是下面那个 distCalls 区间。两条尺各管一头，这条只回答"每次距离计算费多少内存"。
+     * <p>
+     * 433 B/query 是稳态值：工作区的位图和各数组按线程存活、只增不还，所以"容量预留"省下的是
+     * <b>每个线程第一几次查询</b>的翻倍链，不是每次查询。这一点电池里有账
+     * （{@code scratch_buffers_start_tiny} 读数与对照逐字节相同），别把它当本条门禁的功劳。
      */
-    private static final double MAX_BYTES_PER_DIST_CALL = 28.0;
+    private static final double MAX_BYTES_PER_DIST_CALL = 4.0;
     /**
      * distCalls/query 的容许区间：下界挡"少搜一点省分配"，上界挡"贪心下降白做了"。
-     * 实测 176.6（三轮、六个 ef 值上逐条一致）。电池读数：beam 提前收工（ef/2 准入）156.3，
-     * 撤掉贪心下降 214.7，Phase 2 从顶层入口点起跑 249.9 —— 两端都留了同等宽度的余量。
+     * 实测 176.6（三轮、六个 ef 值上逐条一致，本批重构前后一位不变）。电池读数：beam 提前
+     * 收工（ef/2 准入）156.3，撤掉贪心下降 214.7，Phase 2 从顶层入口点起跑 249.9，
+     * 结果堆不做堆排序 343.0（它连构建期的升序前提一起破坏，图就建坏了）——
+     * 两端都留了同等宽度的余量。
      */
     private static final double MIN_DIST_CALLS_PER_QUERY = 168.0;
     private static final double MAX_DIST_CALLS_PER_QUERY = 185.0;
@@ -165,10 +176,12 @@ class HnswQueryAllocationTest {
         assertTrue(s.bytesPerCall <= MAX_BYTES_PER_DIST_CALL,
                 "HNSW query path allocates " + String.format(java.util.Locale.ROOT, "%.1f", s.bytesPerCall)
                         + " B per distance call, gate is " + MAX_BYTES_PER_DIST_CALL
-                        + " (measured after the beam de-duplication: the two beam heaps share"
-                        + " SearchResult instances and an absent payload is Collections.EMPTY_MAP,"
-                        + " not a fresh LinkedHashMap). alloc/query=" + s.bytesPerQuery
-                        + " B, distCalls/query=" + s.callsPerQuery);
+                        + " (measured 2.5 after the candidates stopped being objects: the beam holds"
+                        + " ordinals into a thread-local SearchScratch, and an absent payload is"
+                        + " Collections.EMPTY_MAP rather than a fresh LinkedHashMap). alloc/query="
+                        + s.bytesPerQuery + " B, distCalls/query=" + s.callsPerQuery
+                        + " — 读数在带内却顶红这条线，说明查询路径重新开始造对象，不是搜索变多；"
+                        + " 要改这条线只能重跑 ~/.cache/zv-alloc-teeth 重新取值。");
     }
 
     @Test

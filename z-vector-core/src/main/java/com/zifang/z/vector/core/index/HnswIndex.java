@@ -16,7 +16,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.PriorityQueue;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -73,17 +72,12 @@ public class HnswIndex implements Index {
     public static final long DEFAULT_LEVEL_SEED = 0x5EEDL;
 
     /**
-     * beam 的两个比较器做成常量 —— {@link #searchLayer} 每次调用都要用两次，
-     * 写成 {@code Comparator.comparingDouble(...)} 就是每查询新建若干个 lambda 实例。
-     * <p>
-     * {@code FARTHEST_FIRST} 用 {@code Float.compare(b, a)} 而不是旧代码的
-     * {@code comparingDouble(r -> -r.getScore())}：后者对 score=±0.0 取负后两元素"相等"，
-     * 前者给出确定的全序，两者对距离升序的排序结果一致。
+     * 结果列表按距离升序。beam 内部已经排好序（{@link SearchScratch#sortResultsAscending()}），
+     * 这里只剩"过滤可能跳过几条"这一种情况需要再排一次；写成常量而不是
+     * {@code Comparator.comparingDouble(...)} 就地新建，是为了不再往查询路径里塞 lambda 实例。
      */
     private static final Comparator<SearchResult> NEAREST_FIRST =
             Comparator.comparingDouble(SearchResult::getScore);
-    private static final Comparator<SearchResult> FARTHEST_FIRST =
-            (a, b) -> Float.compare(b.getScore(), a.getScore());
 
     private final Distance distance;
     private final int dimension;
@@ -97,46 +91,178 @@ public class HnswIndex implements Index {
     private final Set<String> tombstones = ConcurrentHashMap.newKeySet();
 
     /**
-     * 节点槽位分配器 —— 只为"每次搜索的已访问集合"服务。
+     * 节点槽位分配器 —— 只为查询期那份"已访问位图"服务。
      * <p>
-     * 旧写法每次 {@link #searchLayer} 新建一个 {@code HashSet<String>}，beam 走过几条边就往里
-     * 塞几个 {@code HashMap$Node}（ef=64 一次查询约 180 个，外加一路翻倍的哈希表数组）。改成
-     * "按槽位打世代戳"的线程私有 int[] 后，每次查询在这一步分配为 0，判定也从"哈希 + 走桶 +
-     * 插入"变成"一次数组寻址"。槽位号密集且被回收复用，所以 int[] 只需要节点数量级的大小。
+     * 位图按槽位寻址，所以槽位必须密集：删掉的节点把槽位退回 {@code freeSlots} 复用，
+     * upsert 沿用旧槽位，于是位图大小跟着"活着的节点数"走而不是写入次数。
      * <p>
      * 只在写锁里改（{@code insertInternal}/{@code remove}/{@code importNodes}/{@code clear}），
      * 读侧全程持读锁，因此"复用槽位"与"正在进行的搜索"不会同时发生。
      */
     private int slotCounter;
     private final ArrayDeque<Integer> freeSlots = new ArrayDeque<>();
-    /** 每线程一份世代戳数组（随本索引一起回收，不做成 static）。 */
-    private final ThreadLocal<VisitMark> visitMarks = new ThreadLocal<VisitMark>() {
-        @Override protected VisitMark initialValue() { return new VisitMark(); }
+    /** 每线程一份查询工作区（随本索引一起回收，不做成 static）。 */
+    private final ThreadLocal<SearchScratch> scratches = new ThreadLocal<SearchScratch>() {
+        @Override protected SearchScratch initialValue() { return new SearchScratch(); }
     };
 
-    /** 一次 searchLayer 的已访问集合：{@code stamp[slot] == gen} 即"本轮已经访问过"。 */
-    private static final class VisitMark {
-        private int[] stamp = new int[64];
-        private int gen = 1;
+    /**
+     * 查询期的工作区 —— 位图、两个堆、距离数组全在这里，线程私有、跨查询复用。
+     * <p>
+     * 旧写法每次 {@link #searchLayer} 新建一个 {@code HashSet<String>} 加两个
+     * {@code PriorityQueue<SearchResult>}，beam 每收一个候选还要再 new 一个 SearchResult：
+     * ef=64、n=5000/dim=128 的一次查询光这些就 48 KB（实测 239 B/次距离计算）。现在堆里装
+     * 的是<b>本次搜索内的序号</b>，序号经 {@link #nodeAt} 指回节点、经 {@link #distAt} 取距离，
+     * 位图按节点槽位判已访问 —— 这条路径上零分配。
+     * <p>
+     * 每线程的内存成本：位图 n/8 字节，其余数组只跟"单次搜索访问过的节点数"同量级
+     * （≈ ef·M），不随语料大小增长。
+     */
+    private static final class SearchScratch {
+        /** slot → 本层已访问位。{@link #endLayer()} 逐位清掉，只有置过位的槽位需要清。 */
+        private long[] bits = new long[8];
+        private int[] touched = new int[256];
+        private int touchedSize;
+        /** 序号 → 节点 / 到查询的距离。两个堆里放的都是序号。 */
+        private Node[] nodeAt = new Node[256];
+        private float[] distAt = new float[256];
+        private int size;
+        /** 待扩展最小堆（近的先出）/ 结果最大堆（远的先出，容量 ef）。 */
+        private int[] near = new int[64];
+        private int nearSize;
+        private int[] far = new int[64];
+        private int farSize;
 
-        /** 每次 searchLayer 都要换新世代：层与层之间的已访问集合互不相通。 */
-        void nextSearch() {
-            if (gen == Integer.MAX_VALUE) {
-                Arrays.fill(stamp, 0);
-                gen = 1;
-            } else {
-                gen++;
+        void beginLayer() {
+            size = 0;
+            nearSize = 0;
+            farSize = 0;
+            touchedSize = 0;
+        }
+
+        /** 只清本次置过的位：代价随"访问过的节点数"，不随全库大小。 */
+        void endLayer() {
+            for (int i = 0; i < touchedSize; i++) {
+                int slot = touched[i];
+                bits[slot >>> 6] &= ~(1L << slot);
             }
+            touchedSize = 0;
         }
 
         /** 第一次访问该槽位返回 true。 */
         boolean visit(int slot) {
-            if (slot >= stamp.length) {
-                stamp = Arrays.copyOf(stamp, Math.max(slot + 1, stamp.length << 1));
+            int word = slot >>> 6;
+            long mask = 1L << slot;
+            if (word >= bits.length) {
+                bits = Arrays.copyOf(bits, Math.max(word + 1, bits.length << 1));
             }
-            if (stamp[slot] == gen) return false;
-            stamp[slot] = gen;
+            if ((bits[word] & mask) != 0L) return false;
+            bits[word] |= mask;
+            if (touchedSize == touched.length) {
+                touched = Arrays.copyOf(touched, touched.length << 1);
+            }
+            touched[touchedSize++] = slot;
             return true;
+        }
+
+        /** 记下 (node, dist)，返回它本次搜索内的序号。同一节点每次搜索只记一次（位图已挡）。 */
+        int remember(Node node, float dist) {
+            if (size == nodeAt.length) {
+                int cap = nodeAt.length << 1;
+                nodeAt = Arrays.copyOf(nodeAt, cap);
+                distAt = Arrays.copyOf(distAt, cap);
+            }
+            int ord = size++;
+            nodeAt[ord] = node;
+            distAt[ord] = dist;
+            return ord;
+        }
+
+        float farthest() { return distAt[far[0]]; }
+
+        void pushNear(int ord) {
+            if (nearSize == near.length) near = Arrays.copyOf(near, near.length << 1);
+            float d = distAt[ord];
+            int i = nearSize++;
+            while (i > 0) {
+                int parent = (i - 1) >>> 1;
+                if (distAt[near[parent]] <= d) break;
+                near[i] = near[parent];
+                i = parent;
+            }
+            near[i] = ord;
+        }
+
+        int popNear() {
+            int top = near[0];
+            int moved = near[--nearSize];
+            if (nearSize > 0) siftDownNear(0, nearSize, moved);
+            return top;
+        }
+
+        private void siftDownNear(int start, int limit, int x) {
+            float d = distAt[x];
+            int i = start;
+            for (;;) {
+                int left = (i << 1) + 1;
+                if (left >= limit) break;
+                int right = left + 1;
+                int child = (right < limit && distAt[near[right]] < distAt[near[left]]) ? right : left;
+                if (distAt[near[child]] >= d) break;
+                near[i] = near[child];
+                i = child;
+            }
+            near[i] = x;
+        }
+
+        void pushFar(int ord) {
+            if (farSize == far.length) far = Arrays.copyOf(far, far.length << 1);
+            float d = distAt[ord];
+            int i = farSize++;
+            while (i > 0) {
+                int parent = (i - 1) >>> 1;
+                if (distAt[far[parent]] >= d) break;
+                far[i] = far[parent];
+                i = parent;
+            }
+            far[i] = ord;
+        }
+
+        int popFar() {
+            int top = far[0];
+            int moved = far[--farSize];
+            if (farSize > 0) siftDownFar(0, farSize, moved);
+            return top;
+        }
+
+        private void siftDownFar(int start, int limit, int x) {
+            float d = distAt[x];
+            int i = start;
+            for (;;) {
+                int left = (i << 1) + 1;
+                if (left >= limit) break;
+                int right = left + 1;
+                int child = (right < limit && distAt[far[right]] > distAt[far[left]]) ? right : left;
+                if (distAt[far[child]] <= d) break;
+                far[i] = far[child];
+                i = child;
+            }
+            far[i] = x;
+        }
+
+        /**
+         * 把结果堆原地排成"由近到远"，返回条数；调用方随后按 {@code far[0..n)} 取序号。
+         * 堆排序每次把堆顶（最远）换到未排序区间的末尾，倒着装完就是升序。
+         */
+        int sortResultsAscending() {
+            int n = farSize;
+            for (int end = n - 1; end > 0; end--) {
+                int tmp = far[0];
+                far[0] = far[end];
+                far[end] = tmp;
+                siftDownFar(0, end, far[0]);
+            }
+            return n;
         }
     }
 
@@ -340,7 +466,7 @@ public class HnswIndex implements Index {
         Node previous = nodes.get(id);
         int level = previous != null ? previous.level : randomLevel();
         // upsert 沿用旧槽位：每重写一次就换一个号的话，槽位号会随写入次数无限增长，
-        // VisitMark 的 int[] 也跟着长，而实际活着的节点只有 nodes.size() 个。
+        // 位图也跟着长，而实际活着的节点只有 nodes.size() 个。
         Node node = new Node(id, point.getVector(), level,
                 previous != null ? previous.slot : nextSlot());
         node.payloadRef = point.getPayload();
@@ -480,42 +606,40 @@ public class HnswIndex implements Index {
         lock.readLock().lock();
         try {
             String ep = entryPoint;
+            SearchScratch sc = scratches.get();
             // Phase 1: 从顶层向下贪心
-            // 复用同一个单元素数组当入口点集合：贪心下降每层都要调一次 searchLayer，
-            // 每层新建 String[] 就是每查询多建 maxLevel+1 个数组，而内容只需要一个槽位。
+            // 复用同一个单元素数组当入口点集合：贪心下降每层都要调一次搜索，每层新建 String[]
+            // 就是每查询多建 maxLevel+1 个数组，而内容只需要一个槽位。
             // 槽里始终是"目前下降到的那个点"，Phase 2 直接从它继续 —— 中途拿旧的 ep 覆写一次，
-            // layer 0 就等于放弃了贪心下降（实测 distCalls/query 从 201 涨回 301）。
+            // layer 0 就等于放弃了贪心下降（实测 distCalls/query 从 176.6 涨回 249.9）。
             String[] epScratch = new String[1];
             epScratch[0] = ep;
             for (int l = maxLevel; l > 0; l--) {
-                SearchResult[] greedy = searchLayer(query, epScratch, 1, l);
-                epScratch[0] = greedy[0].getVectorId();
+                int greedied = searchLayerSlots(query, epScratch, 1, l, sc);
+                if (greedied == 0) return Collections.emptyList();
+                epScratch[0] = sc.nodeAt[sc.far[0]].id;
             }
             // Phase 2: 在 Layer 0 做 efSearch 范围的 k-ANN
-            SearchResult[] efCandidates = searchLayer(query, epScratch,
-                    Math.max(efSearch, topK), 0);
+            int found = searchLayerSlots(query, epScratch, Math.max(efSearch, topK), 0, sc);
 
-            // 过滤 + 排序 + topK
+            // 过滤 + topK
             //
-            // searchLayer 内部用 SearchResult 只当作 (id, score) 的候选载体，payload 恒为空。
-            // 这里必须从 Node.payloadRef 把真实 payload 取回来：
-            //   - matchesFilter 读的就是 r.getPayload()，不挂回去则任何带 filterPayload 的
-            //     查询在 HNSW 上恒为 0 命中（FlatIndex 却正常，两条路径语义不一致）；
-            //   - 上层 Collection.search 也是先拿 raw 结果再 filter.evaluate(r.getPayload())。
-            // 只在最终 topK 上构造带 payload 的对象，避免为 ef 个候选各复制一份 map。
-            //
-            // efCandidates 已按距离升序（{@link #searchLayer} 末尾排的序），所以"够 topK 条就停"
-            // 取到的就是最近的 topK 条，不必先给 ef 个候选各造一个带 payload 的副本再截断。
+            // 候选只以序号形态存在，这里才第一次造 SearchResult，而且只造最终 topK 个：
+            //   - searchLayerSlots 的产物已按距离升序，所以"够 topK 条就停"取到的就是最近的
+            //     topK 条，不必先给 ef 个候选各造一个对象再排序截断；
+            //   - payload 必须从 Node.payloadRef 取回真身：matchesFilter 读的就是它，不挂回去
+            //     则任何带 filterPayload 的查询在 HNSW 上恒为 0 命中（FlatIndex 却正常）；
+            //     上层 Collection.search 也是先拿 raw 结果再 filter.evaluate(r.getPayload())。
             List<SearchResult> scored = new ArrayList<>(topK);
-            for (SearchResult r : efCandidates) {
-                if (scored.size() >= topK) break;
-                if (tombstones.contains(r.getVectorId())) continue;
-                if (r.getScore() > maxDistance) continue;
-                Node n = nodes.get(r.getVectorId());
-                if (n == null) continue;
+            for (int i = 0; i < found && scored.size() < topK; i++) {
+                int ord = sc.far[i];
+                Node n = sc.nodeAt[ord];
+                float dist = sc.distAt[ord];
+                if (tombstones.contains(n.id)) continue;
+                if (dist > maxDistance) continue;
                 Map<String, Object> payload = n.payloadRef;
                 if (filterPayload != null && !matchesFilter(payload, filterPayload)) continue;
-                scored.add(new SearchResult(n.id, r.getScore(), payload));
+                scored.add(new SearchResult(n.id, dist, payload));
             }
             scored.sort(NEAREST_FIRST);
             return scored;
@@ -533,69 +657,79 @@ public class HnswIndex implements Index {
     // ==================== HNSW 核心算法 ====================
 
     /**
-     * 在指定层做 ef-ANN 搜索 — 返回 ef 个最近邻候选。
+     * 在指定层做 ef-ANN 搜索 —— 查询路径的正身。
      * <p>
-     * beam 的两个堆（{@code candidates} 最小堆 / {@code results} 最大堆）装的是<b>同一批</b>
-     * {@link SearchResult} 实例：该对象不可变、两个堆只是按同一个 score 的正逆序各排一遍，
-     * 复制一份只会让每次查询多分配"进 beam 候选数 × 32B"（实测 ef=64 时约 8 KB）。
-     * 比较器同理做成常量，省掉每次调用新建 lambda。
+     * 结果写在本线程的 {@code sc.far[0..n)} 里（按距离升序的<b>序号</b>，用 {@code sc.nodeAt} /
+     * {@code sc.distAt} 还原成 (id, score)），返回条数。调用方按序号取就够了，一个候选对象都不必
+     * 造 —— 造出来就是每查询 ef 个 {@code SearchResult}（ef=64 时约 2 KB，见
+     * {@link SearchScratch}）。
+     * <p>
+     * 每层一个独立的已访问集合：{@link SearchScratch#beginLayer()} 起、
+     * {@link SearchScratch#endLayer()} 收（异常路径也要收，漏一位就等于把这个节点对同线程
+     * 之后的所有搜索永久标记成"已访问"）。
      */
-    private SearchResult[] searchLayer(float[] query, String[] entryPoints, int ef, int level) {
-        // 两个堆都按 ef 预分配：默认容量 11 会让 ef=64 的 beam 连开 4 轮新数组再整份拷贝。
-        PriorityQueue<SearchResult> candidates = new PriorityQueue<>(Math.max(4, ef), NEAREST_FIRST);
-        PriorityQueue<SearchResult> results = new PriorityQueue<>(Math.max(4, ef), FARTHEST_FIRST);
-        // 已访问集合：线程私有的世代戳数组，一次查询零分配（旧写法每走一条边就往 HashSet 里
-        // 塞一个 HashMap$Node，外加一路翻倍扩容）。每层一次换新世代，层与层互不相通。
-        VisitMark mark = visitMarks.get();
-        mark.nextSearch();
-
-        for (String ep : entryPoints) {
-            Node n = nodes.get(ep);
-            if (n == null) continue;
-            float dist = distance.compute(query, n.vector);
-            SearchResult entry = new SearchResult(ep, dist);
-            candidates.add(entry);
-            results.add(entry);
-            mark.visit(n.slot);
-        }
-
-        while (!candidates.isEmpty()) {
-            SearchResult curr = candidates.poll();
-            SearchResult farthestInResults = results.peek();
-            if (curr.getScore() > farthestInResults.getScore()) {
-                break; // 当前最近候选比结果中最远的还远，停止
+    private int searchLayerSlots(float[] query, String[] entryPoints, int ef, int level,
+                                 SearchScratch sc) {
+        sc.beginLayer();
+        try {
+            for (String ep : entryPoints) {
+                Node n = nodes.get(ep);
+                if (n == null) continue;
+                sc.visit(n.slot);
+                int ord = sc.remember(n, distance.compute(query, n.vector));
+                sc.pushNear(ord);
+                sc.pushFar(ord);
             }
-            Node currNode = nodes.get(curr.getVectorId());
-            // 只判 null 挡不住越界：Node.neighbors 的长度恰好是 level+1，所以"被某层邻居表引用、
-            // 自身层数却更低"的节点在这里直接抛 AIOOBE（remove() 不清理反向引用、持久化恢复也
-            // 不校验引用双方的层数）。层数不够 ⇒ 这一层没有它的份，跳过扩展即可。
-            if (currNode == null || level >= currNode.neighbors.length
-                    || currNode.neighbors[level] == null) continue;
 
-            for (SearchResult neighbor : currNode.neighbors[level]) {
-                String nbId = neighbor.getVectorId();
-                Node nbNode = nodes.get(nbId);
-                // 悬挂引用（邻居表指向早已消失的 id）没有槽位可打戳，只能每次重查一次 map。
-                // 健康的图里这条分支命中 0 次，所以不值得为它保留一个 id 集合。
-                if (nbNode == null) continue;
-                if (!mark.visit(nbNode.slot)) continue;
+            while (sc.nearSize > 0) {
+                int curr = sc.popNear();
+                if (sc.distAt[curr] > sc.farthest()) {
+                    break; // 当前最近候选比结果中最远的还远，停止
+                }
+                Node currNode = sc.nodeAt[curr];
+                // neighbors 的长度恰好是 level+1，所以"被某层邻居表引用、自身层数却更低"的节点
+                // 直接取 neighbors[level] 会抛 AIOOBE（remove() 不清理反向引用、持久化恢复也不
+                // 校验引用双方的层数）。层数不够 ⇒ 这一层没有它的份，跳过扩展即可。
+                if (level >= currNode.neighbors.length || currNode.neighbors[level] == null) {
+                    continue;
+                }
 
-                float dist = distance.compute(query, nbNode.vector);
-                farthestInResults = results.peek();
-                if (results.size() < ef || dist < farthestInResults.getScore()) {
-                    SearchResult admit = new SearchResult(nbId, dist);
-                    candidates.add(admit);
-                    results.add(admit);
-                    if (results.size() > ef) {
-                        results.poll();
+                for (SearchResult neighbor : currNode.neighbors[level]) {
+                    Node nbNode = nodes.get(neighbor.getVectorId());
+                    // 悬挂引用（邻居表指向早已消失的 id）：健康图里命中 0 次。
+                    if (nbNode == null) continue;
+                    if (!sc.visit(nbNode.slot)) continue;
+
+                    float dist = distance.compute(query, nbNode.vector);
+                    int ord = sc.remember(nbNode, dist);
+                    if (sc.farSize < ef || dist < sc.farthest()) {
+                        sc.pushNear(ord);
+                        sc.pushFar(ord);
+                        if (sc.farSize > ef) {
+                            sc.popFar();
+                        }
                     }
                 }
             }
+            return sc.sortResultsAscending();
+        } finally {
+            sc.endLayer();
         }
+    }
 
-        // 转成数组并按距离排序
-        SearchResult[] arr = results.toArray(new SearchResult[0]);
-        Arrays.sort(arr, NEAREST_FIRST);
+    /**
+     * 构建期用的物化版：把 {@link #searchLayerSlots} 的结果序号换成按距离升序的
+     * {@code SearchResult[]}。只有 {@code insertInternal} 走这里（{@code selectNeighbors}
+     * 要的就是带 id 和距离的候选数组）；查询路径直接消费序号，不经过这一步。
+     */
+    private SearchResult[] searchLayer(float[] query, String[] entryPoints, int ef, int level) {
+        SearchScratch sc = scratches.get();
+        int n = searchLayerSlots(query, entryPoints, ef, level, sc);
+        SearchResult[] arr = new SearchResult[n];
+        for (int i = 0; i < n; i++) {
+            int ord = sc.far[i];
+            arr[i] = new SearchResult(sc.nodeAt[ord].id, sc.distAt[ord]);
+        }
         return arr;
     }
 
@@ -706,7 +840,7 @@ public class HnswIndex implements Index {
         final String id;
         final float[] vector;
         final int level;
-        /** 密集槽位号，只给 {@link VisitMark} 的世代戳数组当下标用。 */
+        /** 密集槽位号，只给 {@link SearchScratch} 的已访问位图当下标用。 */
         final int slot;
         Map<String, Object> payloadRef;  // 引用 VectorPoint 的 payload（节省内存）
         @SuppressWarnings("unchecked")
