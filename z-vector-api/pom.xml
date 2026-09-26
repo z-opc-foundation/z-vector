@@ -8,10 +8,9 @@
     <parent>
         <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector</artifactId>
-        <version>1.0.3</version>
+        <version>${revision}</version>
     </parent>
     <groupId>io.github.yuku123</groupId>
-    <version>1.0.3</version>
 
     <artifactId>z-vector-api</artifactId>
     <packaging>jar</packaging>

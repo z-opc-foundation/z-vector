@@ -7,12 +7,11 @@
     <parent>
         <groupId>io.github.yuku123</groupId>
         <artifactId>z-vector</artifactId>
-        <version>1.0.3</version>
+        <version>${revision}</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
     <groupId>io.github.yuku123</groupId>
-    <version>1.0.3</version>
     <artifactId>z-vector-server</artifactId>
     <packaging>jar</packaging>
     <name>z-vector-server</name>
@@ -47,15 +46,14 @@
     </scm>
 
     <dependencies>
+        <!-- 兄弟模块一律不写 <version>：版本只在聚合 pom 的 dependencyManagement 里出现一次。 -->
         <dependency>
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector-core</artifactId>
-            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector-storage</artifactId>
-            <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>

@@ -91,42 +91,42 @@ class VectorServerApplicationTest {
         assertEquals(200, r.status);
         // 这一条以前长这样：assertEquals("1.0.2", r.json().get("version"))，而 main 里就是同一个
         // 字面量 —— 两边一起漂，断言永远绿（同一处错过两次：1.0.1 对 1.0.2、1.0.2 对 1.0.3）。
-        // 现在比的是 pom 的 project version：pom 改号不改编码，这条立刻红。
-        String pomVersion = projectVersionOf(new String(
-                java.nio.file.Files.readAllBytes(java.nio.file.Paths.get("pom.xml")),
-                StandardCharsets.UTF_8));
-        assertEquals(pomVersion, r.json().get("version"),
-                "/health 报的版本不等于 pom 的 project version（pom=" + pomVersion + "）");
+        // 参照值取聚合 pom 的 <revision>（全仓版本的唯一定义点）。不再读模块 pom 的第一个
+        // <version>：模块 pom 如今压根不写自己的版本，那样会一路读到依赖的头上去
+        // （实测读到的是字面量 "${project.version}"）。
+        String revision = PomFiles.revisionOf(PomFiles.read(PomFiles.rootPom()));
+        assertEquals(revision, r.json().get("version"),
+                "/health 报的版本不等于聚合 pom 的 <revision>（revision=" + revision + "）");
         assertNotEquals("unknown", r.json().get("version"),
                 "build-info.properties 没读到 ⇒ 资源过滤没生效，上面那条会退化成 unknown==unknown");
         assertEquals(1, ((Number) r.json().get("collections")).intValue());
     }
 
     /**
-     * {@link #projectVersionOf} 的猎物对照。真 pom 里 {@code <parent><version>} 与 project 自己的
-     * version **碰巧同值**（都是 1.0.3）⇒ 拿这份 pom 测不出"取错了那一个"，必须喂两值不同的合成 pom。
+     * {@link PomFiles#revisionOf} 的猎物对照。聚合 pom 里同时住着三个"版本"：
+     * {@code <parent>} 的 1.0.0-SNAPSHOT、{@code <version>${revision}} 这个占位、
+     * 和 {@code <revision>} 的真值 ⇒ 读错任何一个都拿得到字符串，只有两值不同的替身 pom 分得开。
      */
     @Test
-    void projectVersionOfReadsProjectNotParent() {
+    void revisionOfReadsThePropertyNotTheParent() {
         String synthetic = "<project>\n"
-                + "  <parent>\n    <artifactId>z-vector</artifactId>\n    <version>9.9.9</version>\n"
-                + "  </parent>\n"
-                + "  <artifactId>z-vector-server</artifactId>\n  <version>8.8.8</version>\n"
+                + "  <parent>\n    <groupId>com.zifang</groupId>\n    <artifactId>z-opc</artifactId>\n"
+                + "    <version>1.0.0-SNAPSHOT</version>\n  </parent>\n"
+                + "  <artifactId>z-vector</artifactId>\n  <version>${revision}</version>\n"
+                + "  <packaging>pom</packaging>\n"
+                + "  <properties>\n    <revision>8.8.8</revision>\n  </properties>\n"
                 + "</project>\n";
-        assertEquals("8.8.8", projectVersionOf(synthetic), "取成了 <parent> 里的版本");
-        assertEquals("7.7.7", projectVersionOf(synthetic.replace("8.8.8", "7.7.7")),
+        assertEquals("8.8.8", PomFiles.revisionOf(synthetic), "读的不是 <revision>");
+        assertEquals("7.7.7", PomFiles.revisionOf(synthetic.replace("8.8.8", "7.7.7")),
                 "解析器没在真读输入（回吐了常量）");
-    }
-
-    /** 先剥掉 {@code <parent>…</parent>}，再取第一个 {@code <version>}。 */
-    private static String projectVersionOf(String pomXml) {
-        String close = "</parent>";
-        int end = pomXml.indexOf(close);
-        String rest = end >= 0 ? pomXml.substring(end + close.length()) : pomXml;
-        java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("<version>([^<]+)</version>").matcher(rest);
-        assertTrue(m.find(), "这份 pom 里没有 project version");
-        return m.group(1).trim();
+        // "唯一定义点"这半句的猎物：定义两次必须当场炸，否则这句话没人钉。
+        // 注意是在同一个 <properties> 里加第二个 <revision> —— 拼两份完整文档不是合法 XML，
+        // 只会拿到"解析不了"而不是"定义了两处"，猎物就打偏了（实测就是这么假的）。
+        final String twice = synthetic.replace(
+                "<revision>8.8.8</revision>",
+                "<revision>8.8.8</revision>\n    <revision>6.6.6</revision>");
+        org.junit.jupiter.api.Assertions.assertThrows(org.opentest4j.AssertionFailedError.class,
+                () -> PomFiles.revisionOf(twice), "<revision> 出现两次却仍然返回了其中一个");
     }
 
     // ==================== /collections ====================

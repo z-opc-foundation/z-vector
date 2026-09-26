@@ -14,7 +14,7 @@
 
     <artifactId>z-vector</artifactId>
     <groupId>io.github.yuku123</groupId>
-    <version>1.0.3</version>
+    <version>${revision}</version>
     <packaging>pom</packaging>
     <name>z-vector</name>
     <description>
@@ -62,6 +62,12 @@
     </modules>
 
     <properties>
+        <!-- 版本号只在这一处定义（改号只动这里）。子模块一律 `${revision}` 引父、不写自己的
+             `<version>`，兄弟依赖也走下面的 dependencyManagement ⇒ 全仓不存在第二个版本字面量。
+             代价是发布/安装的 pom 必须先把 `${revision}` 展开——flatten 因此挪出 central profile
+             变成常开（见文末注释），否则 `mvn install` 会把带 `${revision}` 的 pom 装进 m2，
+             下游解析 parent 时直接找不到构件。 -->
+        <revision>1.0.3</revision>
         <java.version>1.8</java.version>
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
@@ -227,6 +233,47 @@
                 </plugin>
             </plugins>
         </pluginManagement>
+
+        <plugins>
+            <!-- 发布/安装的 pom 必须自包含，两个理由各吃过一次教训：
+                 1) 本仓的 parent 是 com.zifang:z-opc:1.0.0-SNAPSHOT，它永远不会（也不能）出现在
+                    Central 上。带着这个 parent 发出去的构件，任何外部消费者第一次解析就报
+                    "Could not find artifact com.zifang:z-opc:pom:1.0.0-SNAPSHOT"，等于构件全废。
+                 2) 版本现在写的是 ${revision}（只在本文件 properties 里定义一次）。带着
+                    ${revision} 的 pom 一旦装进 ~/.m2，下游解析 parent 时按字面量找
+                    "z-vector:${revision}" 这个目录 ⇒ 直接 404，而且是在别人的构建里炸。
+                 flatten 在 process-resources 生成去掉 parent、把继承来的版本全部写死的 pom，
+                 install/deploy 用它替换（updatePomFile）。
+                 ⇒ 因此它必须常开，不能只挂在 central profile 上（改前就是挂 profile：
+                   `mvn install` 不带 -P central 时装进去的 pom 会留着 ${revision}）。
+                 （同款已先在 z-cache 1.3.3/1.3.4 验证：Central 上的 starter pom <parent> 计数 = 0） -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <version>1.6.0</version>
+                <inherited>true</inherited>
+                <configuration>
+                    <updatePomFile>true</updatePomFile>
+                    <flattenMode>oss</flattenMode>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>flatten</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>flatten.clean</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
     </build>
 
     <profiles>
@@ -265,41 +312,6 @@
             </distributionManagement>
             <build>
                 <plugins>
-                    <!-- 发布用的 pom 必须自包含：本仓的 parent 是 com.zifang:z-opc:1.0.0-SNAPSHOT，
-                         它永远不会（也不能）出现在 Central 上。带着这个 parent 发出去的构件，
-                         任何外部消费者第一次解析就报
-                         "Could not find artifact com.zifang:z-opc:pom:1.0.0-SNAPSHOT"，
-                         等于构件全废。flatten 在 process-resources 生成去掉 parent、
-                         并把继承来的版本全部写死的 pom，install/deploy 用它替换（updatePomFile）。
-                         本地 monorepo 构建链不受影响：不带 -P central 时不执行。
-                         （同款已先在 z-cache 1.3.3/1.3.4 验证： Central 上的 starter pom <parent> 计数 = 0） -->
-                    <plugin>
-                        <groupId>org.codehaus.mojo</groupId>
-                        <artifactId>flatten-maven-plugin</artifactId>
-                        <version>1.6.0</version>
-                        <inherited>true</inherited>
-                        <configuration>
-                            <updatePomFile>true</updatePomFile>
-                            <flattenMode>oss</flattenMode>
-                        </configuration>
-                        <executions>
-                            <execution>
-                                <id>flatten</id>
-                                <phase>process-resources</phase>
-                                <goals>
-                                    <goal>flatten</goal>
-                                </goals>
-                            </execution>
-                            <execution>
-                                <id>flatten.clean</id>
-                                <phase>clean</phase>
-                                <goals>
-                                    <goal>clean</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                    </plugin>
-
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-deploy-plugin</artifactId>
