@@ -7,12 +7,12 @@ import com.zifang.z.vector.core.distance.Distance;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -72,6 +72,19 @@ public class HnswIndex implements Index {
     /** 层级随机数的默认种子：让同一份语料的两次 build 得到同一张图。 */
     public static final long DEFAULT_LEVEL_SEED = 0x5EEDL;
 
+    /**
+     * beam 的两个比较器做成常量 —— {@link #searchLayer} 每次调用都要用两次，
+     * 写成 {@code Comparator.comparingDouble(...)} 就是每查询新建若干个 lambda 实例。
+     * <p>
+     * {@code FARTHEST_FIRST} 用 {@code Float.compare(b, a)} 而不是旧代码的
+     * {@code comparingDouble(r -> -r.getScore())}：后者对 score=±0.0 取负后两元素"相等"，
+     * 前者给出确定的全序，两者对距离升序的排序结果一致。
+     */
+    private static final Comparator<SearchResult> NEAREST_FIRST =
+            Comparator.comparingDouble(SearchResult::getScore);
+    private static final Comparator<SearchResult> FARTHEST_FIRST =
+            (a, b) -> Float.compare(b.getScore(), a.getScore());
+
     private final Distance distance;
     private final int dimension;
     private final int M;
@@ -82,6 +95,67 @@ public class HnswIndex implements Index {
     private final Map<String, Node> nodes = new ConcurrentHashMap<>();
     /** 逻辑删除的 id */
     private final Set<String> tombstones = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 节点槽位分配器 —— 只为"每次搜索的已访问集合"服务。
+     * <p>
+     * 旧写法每次 {@link #searchLayer} 新建一个 {@code HashSet<String>}，beam 走过几条边就往里
+     * 塞几个 {@code HashMap$Node}（ef=64 一次查询约 180 个，外加一路翻倍的哈希表数组）。改成
+     * "按槽位打世代戳"的线程私有 int[] 后，每次查询在这一步分配为 0，判定也从"哈希 + 走桶 +
+     * 插入"变成"一次数组寻址"。槽位号密集且被回收复用，所以 int[] 只需要节点数量级的大小。
+     * <p>
+     * 只在写锁里改（{@code insertInternal}/{@code remove}/{@code importNodes}/{@code clear}），
+     * 读侧全程持读锁，因此"复用槽位"与"正在进行的搜索"不会同时发生。
+     */
+    private int slotCounter;
+    private final ArrayDeque<Integer> freeSlots = new ArrayDeque<>();
+    /** 每线程一份世代戳数组（随本索引一起回收，不做成 static）。 */
+    private final ThreadLocal<VisitMark> visitMarks = new ThreadLocal<VisitMark>() {
+        @Override protected VisitMark initialValue() { return new VisitMark(); }
+    };
+
+    /** 一次 searchLayer 的已访问集合：{@code stamp[slot] == gen} 即"本轮已经访问过"。 */
+    private static final class VisitMark {
+        private int[] stamp = new int[64];
+        private int gen = 1;
+
+        /** 每次 searchLayer 都要换新世代：层与层之间的已访问集合互不相通。 */
+        void nextSearch() {
+            if (gen == Integer.MAX_VALUE) {
+                Arrays.fill(stamp, 0);
+                gen = 1;
+            } else {
+                gen++;
+            }
+        }
+
+        /** 第一次访问该槽位返回 true。 */
+        boolean visit(int slot) {
+            if (slot >= stamp.length) {
+                stamp = Arrays.copyOf(stamp, Math.max(slot + 1, stamp.length << 1));
+            }
+            if (stamp[slot] == gen) return false;
+            stamp[slot] = gen;
+            return true;
+        }
+    }
+
+    /** 取一个槽位：优先复用被删除节点腾出来的，否则往前推分配器。调用方持写锁。 */
+    private int nextSlot() {
+        Integer recycled = freeSlots.pollFirst();
+        if (recycled != null) return recycled;
+        return slotCounter++;
+    }
+
+    /**
+     * 槽位分配器归零（{@link #clear()} 与 {@link #importNodes} 用），节点从 0 号槽位重新发号。
+     * 调用方持写锁。世代戳不用清：{@code gen} 只单调往前走，重发出来的槽位里残留的是<b>更旧</b>
+     * 世代的号，永远不会等于当前世代。
+     */
+    private void resetSlots() {
+        slotCounter = 0;
+        freeSlots.clear();
+    }
 
     /** 入口点 id（最高层的某个节点） */
     private volatile String entryPoint;
@@ -187,6 +261,7 @@ public class HnswIndex implements Index {
         try {
             nodes.clear();
             tombstones.clear();
+            resetSlots();
             int maxL = -1;
             for (Map.Entry<String, com.zifang.z.vector.core.index.HnswPersistence.HnswNodeData> e
                     : nodeMap.entrySet()) {
@@ -206,7 +281,7 @@ public class HnswIndex implements Index {
                     }
                     neighbors[lvl] = list;
                 }
-                Node node = new Node(data.id, data.vector, data.level);
+                Node node = new Node(data.id, data.vector, data.level, nextSlot());
                 // payload 必须跟着图一起回来：Collection 没有独立的点存储，索引就是数据本身。
                 // 这里若塞空 map，重启后 get()/search() 的 payload 全空，payload 倒排也只能
                 // 重建一张空表（过滤搜索永久退回放大候选的慢路径）。
@@ -264,7 +339,10 @@ public class HnswIndex implements Index {
         // 会指向一个 neighbors 数组长度只有 1 的节点，遍历到它就抛 AIOOBE。
         Node previous = nodes.get(id);
         int level = previous != null ? previous.level : randomLevel();
-        Node node = new Node(id, point.getVector(), level);
+        // upsert 沿用旧槽位：每重写一次就换一个号的话，槽位号会随写入次数无限增长，
+        // VisitMark 的 int[] 也跟着长，而实际活着的节点只有 nodes.size() 个。
+        Node node = new Node(id, point.getVector(), level,
+                previous != null ? previous.slot : nextSlot());
         node.payloadRef = point.getPayload();
         nodes.put(id, node);
         tombstones.remove(id);
@@ -305,6 +383,8 @@ public class HnswIndex implements Index {
             for (SearchResult nb : neighbors) {
                 Node nbNode = nodes.get(nb.getVectorId());
                 if (nbNode != null && nbNode.neighbors[l] != null) {
+                    // 反向这条边的 id 是新节点、score 才沿用候选的距离，两个字段与正向那条
+                    // 正好错开，所以这里不能共享 SearchResult 实例（正向那条的 id 是邻居自己的）。
                     nbNode.neighbors[l].add(new SearchResult(id, nb.getScore()));
                     // 修剪邻居列表到该层的上限
                     if (nbNode.neighbors[l].size() > maxNb) {
@@ -331,6 +411,8 @@ public class HnswIndex implements Index {
         try {
             Node removed = nodes.remove(id);
             if (removed == null) return false;
+            // 槽位回收给后面的节点用，int[] 的大小才始终跟着"活着的节点数"而不是"曾经写过的节点数"。
+            freeSlots.addLast(removed.slot);
             tombstones.add(id);
             // 如果删除的是入口点，需要找一个新入口点
             if (id.equals(entryPoint)) {
@@ -360,6 +442,7 @@ public class HnswIndex implements Index {
         try {
             nodes.clear();
             tombstones.clear();
+            resetSlots();
             entryPoint = null;
             maxLevel = -1;
         } finally {
@@ -398,12 +481,18 @@ public class HnswIndex implements Index {
         try {
             String ep = entryPoint;
             // Phase 1: 从顶层向下贪心
+            // 复用同一个单元素数组当入口点集合：贪心下降每层都要调一次 searchLayer，
+            // 每层新建 String[] 就是每查询多建 maxLevel+1 个数组，而内容只需要一个槽位。
+            // 槽里始终是"目前下降到的那个点"，Phase 2 直接从它继续 —— 中途拿旧的 ep 覆写一次，
+            // layer 0 就等于放弃了贪心下降（实测 distCalls/query 从 201 涨回 301）。
+            String[] epScratch = new String[1];
+            epScratch[0] = ep;
             for (int l = maxLevel; l > 0; l--) {
-                SearchResult[] greedy = searchLayer(query, new String[]{ep}, 1, l);
-                ep = greedy[0].getVectorId();
+                SearchResult[] greedy = searchLayer(query, epScratch, 1, l);
+                epScratch[0] = greedy[0].getVectorId();
             }
             // Phase 2: 在 Layer 0 做 efSearch 范围的 k-ANN
-            SearchResult[] efCandidates = searchLayer(query, new String[]{ep},
+            SearchResult[] efCandidates = searchLayer(query, epScratch,
                     Math.max(efSearch, topK), 0);
 
             // 过滤 + 排序 + topK
@@ -414,8 +503,12 @@ public class HnswIndex implements Index {
             //     查询在 HNSW 上恒为 0 命中（FlatIndex 却正常，两条路径语义不一致）；
             //   - 上层 Collection.search 也是先拿 raw 结果再 filter.evaluate(r.getPayload())。
             // 只在最终 topK 上构造带 payload 的对象，避免为 ef 个候选各复制一份 map。
-            List<SearchResult> scored = new ArrayList<>(efCandidates.length);
+            //
+            // efCandidates 已按距离升序（{@link #searchLayer} 末尾排的序），所以"够 topK 条就停"
+            // 取到的就是最近的 topK 条，不必先给 ef 个候选各造一个带 payload 的副本再截断。
+            List<SearchResult> scored = new ArrayList<>(topK);
             for (SearchResult r : efCandidates) {
+                if (scored.size() >= topK) break;
                 if (tombstones.contains(r.getVectorId())) continue;
                 if (r.getScore() > maxDistance) continue;
                 Node n = nodes.get(r.getVectorId());
@@ -424,10 +517,7 @@ public class HnswIndex implements Index {
                 if (filterPayload != null && !matchesFilter(payload, filterPayload)) continue;
                 scored.add(new SearchResult(n.id, r.getScore(), payload));
             }
-            scored.sort(Comparator.comparingDouble(SearchResult::getScore));
-            if (scored.size() > topK) {
-                scored = new ArrayList<>(scored.subList(0, topK));
-            }
+            scored.sort(NEAREST_FIRST);
             return scored;
         } finally {
             lock.readLock().unlock();
@@ -444,21 +534,29 @@ public class HnswIndex implements Index {
 
     /**
      * 在指定层做 ef-ANN 搜索 — 返回 ef 个最近邻候选。
+     * <p>
+     * beam 的两个堆（{@code candidates} 最小堆 / {@code results} 最大堆）装的是<b>同一批</b>
+     * {@link SearchResult} 实例：该对象不可变、两个堆只是按同一个 score 的正逆序各排一遍，
+     * 复制一份只会让每次查询多分配"进 beam 候选数 × 32B"（实测 ef=64 时约 8 KB）。
+     * 比较器同理做成常量，省掉每次调用新建 lambda。
      */
     private SearchResult[] searchLayer(float[] query, String[] entryPoints, int ef, int level) {
-        PriorityQueue<SearchResult> candidates = new PriorityQueue<>(
-                Comparator.comparingDouble(SearchResult::getScore)); // 最小堆
-        PriorityQueue<SearchResult> results = new PriorityQueue<>(
-                Comparator.comparingDouble((SearchResult r) -> -r.getScore())); // 最大堆（保留最差）
-        Set<String> visited = new HashSet<>();
+        // 两个堆都按 ef 预分配：默认容量 11 会让 ef=64 的 beam 连开 4 轮新数组再整份拷贝。
+        PriorityQueue<SearchResult> candidates = new PriorityQueue<>(Math.max(4, ef), NEAREST_FIRST);
+        PriorityQueue<SearchResult> results = new PriorityQueue<>(Math.max(4, ef), FARTHEST_FIRST);
+        // 已访问集合：线程私有的世代戳数组，一次查询零分配（旧写法每走一条边就往 HashSet 里
+        // 塞一个 HashMap$Node，外加一路翻倍扩容）。每层一次换新世代，层与层互不相通。
+        VisitMark mark = visitMarks.get();
+        mark.nextSearch();
 
         for (String ep : entryPoints) {
             Node n = nodes.get(ep);
             if (n == null) continue;
             float dist = distance.compute(query, n.vector);
-            candidates.add(new SearchResult(ep, dist));
-            results.add(new SearchResult(ep, dist));
-            visited.add(ep);
+            SearchResult entry = new SearchResult(ep, dist);
+            candidates.add(entry);
+            results.add(entry);
+            mark.visit(n.slot);
         }
 
         while (!candidates.isEmpty()) {
@@ -475,16 +573,19 @@ public class HnswIndex implements Index {
                     || currNode.neighbors[level] == null) continue;
 
             for (SearchResult neighbor : currNode.neighbors[level]) {
-                if (visited.contains(neighbor.getVectorId())) continue;
-                visited.add(neighbor.getVectorId());
-                Node nbNode = nodes.get(neighbor.getVectorId());
+                String nbId = neighbor.getVectorId();
+                Node nbNode = nodes.get(nbId);
+                // 悬挂引用（邻居表指向早已消失的 id）没有槽位可打戳，只能每次重查一次 map。
+                // 健康的图里这条分支命中 0 次，所以不值得为它保留一个 id 集合。
                 if (nbNode == null) continue;
+                if (!mark.visit(nbNode.slot)) continue;
 
                 float dist = distance.compute(query, nbNode.vector);
                 farthestInResults = results.peek();
                 if (results.size() < ef || dist < farthestInResults.getScore()) {
-                    candidates.add(new SearchResult(neighbor.getVectorId(), dist));
-                    results.add(new SearchResult(neighbor.getVectorId(), dist));
+                    SearchResult admit = new SearchResult(nbId, dist);
+                    candidates.add(admit);
+                    results.add(admit);
                     if (results.size() > ef) {
                         results.poll();
                     }
@@ -494,7 +595,7 @@ public class HnswIndex implements Index {
 
         // 转成数组并按距离排序
         SearchResult[] arr = results.toArray(new SearchResult[0]);
-        Arrays.sort(arr, Comparator.comparingDouble(SearchResult::getScore));
+        Arrays.sort(arr, NEAREST_FIRST);
         return arr;
     }
 
@@ -605,15 +706,18 @@ public class HnswIndex implements Index {
         final String id;
         final float[] vector;
         final int level;
+        /** 密集槽位号，只给 {@link VisitMark} 的世代戳数组当下标用。 */
+        final int slot;
         Map<String, Object> payloadRef;  // 引用 VectorPoint 的 payload（节省内存）
         @SuppressWarnings("unchecked")
         final List<SearchResult>[] neighbors;
 
         @SuppressWarnings("unchecked")
-        Node(String id, float[] vector, int level) {
+        Node(String id, float[] vector, int level, int slot) {
             this.id = id;
             this.vector = vector;
             this.level = level;
+            this.slot = slot;
             this.neighbors = new List[level + 1];
             for (int i = 0; i <= level; i++) {
                 this.neighbors[i] = new ArrayList<>();
