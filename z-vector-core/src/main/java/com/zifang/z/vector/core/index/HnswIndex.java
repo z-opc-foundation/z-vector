@@ -114,6 +114,49 @@ public class HnswIndex implements Index {
     };
 
     /**
+     * 写路径的工作区 —— 只在写锁里用：{@link #insertInternal} 的两个调用点（{@code build}/
+     * {@code add}）都持写锁，而这几块数组只有 insertInternal 这条链会碰，所以是普通字段、
+     * 不必再摊一份 ThreadLocal。
+     * <p>
+     * 为什么要存在：JFR 分配采样（n=1500、dim=128、M=16、efConstruction=200，一次运行只有几十
+     * 个样本事件 ⇒ 占比只当量级看，别当小数点后的账）里 {@code SearchResult[]} 数组本身占构建期
+     * 分配约五成、{@code pruneNeighbors} 的 {@code toArray} 快照加上 {@code Arrays.sort} 的
+     * TimSort 临时态占约四成。这两笔都不是
+     * "每次插入必然要付"的开销 —— 反复新建的是同一块几十到几百槽的数组。
+     * <p>
+     * 都按高水位增长、从不缩；{@code pruneObjs} 用完即清空（它握着的是图上活着的邻居对象，
+     * 留着引用等于把上一批表扣在场上）。
+     */
+    private String[] candIds = new String[0];
+    private float[] candScores = new float[0];
+    private int[] discardIdx = new int[0];
+    private SearchResult[] pruneObjs = new SearchResult[0];
+
+    /** 复用数组的容量：0 时直接跳到需求值，之后翻倍，避免每插入一个点重开一次数组。 */
+    private static int nextCapacity(int have, int need) {
+        if (have >= need) return have;
+        int next = have == 0 ? need : have;
+        while (next < need) next <<= 1;
+        return next;
+    }
+
+    private static String[] growIds(String[] buf, int need) {
+        return buf.length >= need ? buf : Arrays.copyOf(buf, nextCapacity(buf.length, need));
+    }
+
+    private static float[] growFloats(float[] buf, int need) {
+        return buf.length >= need ? buf : Arrays.copyOf(buf, nextCapacity(buf.length, need));
+    }
+
+    private static int[] growInts(int[] buf, int need) {
+        return buf.length >= need ? buf : Arrays.copyOf(buf, nextCapacity(buf.length, need));
+    }
+
+    private static SearchResult[] growObjects(SearchResult[] buf, int need) {
+        return buf.length >= need ? buf : Arrays.copyOf(buf, nextCapacity(buf.length, need));
+    }
+
+    /**
      * 查询期的工作区 —— 位图、两个堆、距离数组全在这里，线程私有、跨查询复用。
      * <p>
      * 旧写法每次 {@link #searchLayer} 新建一个 {@code HashSet<String>} 加两个
@@ -477,8 +520,8 @@ public class HnswIndex implements Index {
         Node previous = nodes.get(id);
         // 墓碑里的层数要一并算进来：remove() 不擦别人指向该 id 的高层边，所以"删掉再写回来"的
         // 节点同样不许往回退层，否则那些边当场变成悬空引用（实测 40 个种子里 36 个随后插入时抛
-        // AIOOBE，见 HnswLevelInvariantTest）。没有墓碑时 remembered 为 null，这里与改动前逐字
-        // 相同、随机数抽取次序也不变 ⇒ 同一份语料 build 出的图不变。
+        // AIOOBE，见 HnswGraphShapeTest.reinsertingADeletedIdKeepsItsLayer）。没有墓碑时 remembered
+        // 为 null，这里与改动前逐字相同、随机数抽取次序也不变 ⇒ 同一份语料 build 出的图不变。
         Integer remembered = tombstones.remove(id);
         int level;
         if (previous != null) {
@@ -491,7 +534,11 @@ public class HnswIndex implements Index {
         // 位图也跟着长，而实际活着的节点只有 nodes.size() 个。
         Node node = new Node(id, point.getVector(), level,
                 previous != null ? previous.slot : nextSlot());
-        node.payloadRef = point.getPayload();
+        // payload 存原引用（与 FlatIndex 一致）：VectorPoint.getPayload() 每次都套一层
+        // Collections.unmodifiableMap，白付一个包装对象。这一笔实测很小（变异对照量到 +55 B/insert，
+        // 在门禁的噪声地板以下），留着是因为它顺带让 HNSW 与 Flat 两条写入路径存的是同一个东西 ——
+        // 别把它读成一次性能优化。
+        node.payloadRef = point.payloadRef();
         nodes.put(id, node);
 
         if (entryPoint == null) {
@@ -508,15 +555,15 @@ public class HnswIndex implements Index {
 
         for (int l = maxLevel; l > level; l--) {
             // 在每层做贪心搜索
-            SearchResult[] greedy = searchLayer(query, new String[]{ep}, 1, l);
-            ep = greedy[0].getVectorId();
-            distEp = greedy[0].getScore();
+            searchLayer(query, new String[]{ep}, 1, l);
+            ep = candIds[0];
+            distEp = candScores[0];
         }
 
         // Phase 2: 在 [level, 0] 每层构建连接
         String[] epSet = new String[]{ep};
         for (int l = Math.min(level, maxLevel); l >= 0; l--) {
-            SearchResult[] candidates = searchLayer(query, epSet, efConstruction, l);
+            int candidateCount = searchLayer(query, epSet, efConstruction, l);
             // 第 0 层是搜索真正落地的地方，标准 HNSW 给它 2M 的度上限（M_max0 = 2M）；
             // 只留 M 条边会让 layer 0 的可达性随数据量变差（实测同一套参数 recall
             // 从 n=5000 的 0.816 掉到 n=20000 的 0.58）。正反两个方向都按这个上限走，
@@ -524,7 +571,9 @@ public class HnswIndex implements Index {
             int maxNb = (l == 0) ? 2 * M : M;
             // 从 efConstruction 个候选里按启发式挑 maxNb 条（论文 Algorithm 4）：只按"离自己最近"
             // 取 maxNb 条会让跨簇的长程边在修剪中被同簇近邻挤光，图会碎成孤岛。
-            List<SearchResult> neighbors = selectNeighbors(node, candidates, maxNb);
+            // reuse 传 null ⇒ 只有活下来的 ≤maxNb 条边各造一个 SearchResult。
+            List<SearchResult> neighbors = selectNeighbors(node, candIds, candScores, null,
+                    candidateCount, maxNb);
             connect(node, neighbors, l);
             // 反向：把新节点加入候选邻居的邻居列表
             for (SearchResult nb : neighbors) {
@@ -563,7 +612,7 @@ public class HnswIndex implements Index {
             // 槽位回收给后面的节点用，int[] 的大小才始终跟着"活着的节点数"而不是"曾经写过的节点数"。
             freeSlots.addLast(removed.slot);
             // 墓碑带上层数：别人邻居表里指向本 id 的边还在原位，重新写入时层数不许往回退
-            // （见 tombstones 字段与 HnswLevelInvariantTest）。
+            // （见 tombstones 字段与 HnswGraphShapeTest.reinsertingADeletedIdKeepsItsLayer）。
             tombstones.put(id, removed.level);
             // 如果删除的是入口点，需要找一个新入口点
             if (id.equals(entryPoint)) {
@@ -743,19 +792,25 @@ public class HnswIndex implements Index {
     }
 
     /**
-     * 构建期用的物化版：把 {@link #searchLayerSlots} 的结果序号换成按距离升序的
-     * {@code SearchResult[]}。只有 {@code insertInternal} 走这里（{@code selectNeighbors}
-     * 要的就是带 id 和距离的候选数组）；查询路径直接消费序号，不经过这一步。
+     * 构建期用的收集版：把 {@link #searchLayerSlots} 的结果序号还原成按距离升序的候选，写进
+     * 复用的 {@code candIds}/{@code candScores}（{@code selectNeighbors} 吃的就是这两条平行数组），
+     * 返回条数。只有 {@code insertInternal} 走这里；查询路径直接消费序号，不经过这一步。
+     * <p>
+     * 这里<b>不造 {@code SearchResult}</b>：efConstruction=200 时一次收集要过 200 个候选，最后
+     * 留下的最多 2M=32 条 —— 旧写法每插入一个点多造 168 个用完就扔的对象（这一度是构建期最大的
+     * 单一分配点）。id 是节点已有字符串的引用，分数进 float 数组，两步都零分配。
      */
-    private SearchResult[] searchLayer(float[] query, String[] entryPoints, int ef, int level) {
+    private int searchLayer(float[] query, String[] entryPoints, int ef, int level) {
         SearchScratch sc = scratches.get();
         int n = searchLayerSlots(query, entryPoints, ef, level, sc);
-        SearchResult[] arr = new SearchResult[n];
+        candIds = growIds(candIds, n);
+        candScores = growFloats(candScores, n);
         for (int i = 0; i < n; i++) {
             int ord = sc.far[i];
-            arr[i] = new SearchResult(sc.nodeAt[ord].id, sc.distAt[ord]);
+            candIds[i] = sc.nodeAt[ord].id;
+            candScores[i] = sc.distAt[ord];
         }
-        return arr;
+        return n;
     }
 
     /**
@@ -769,35 +824,51 @@ public class HnswIndex implements Index {
      * recall@10@efSearch=64 = 0.647，而且 efSearch 从 64 抬到 1024 逐查询命中一位都不变
      * （那些节点根本不在可达集里，不是 beam 太窄）。
      * <p>
-     * 前提：{@code candidates} 已按离 q 的距离升序排列（{@link #searchLayer} 的返回就是这个
-     * 顺序，反向修剪用的邻居表 score 同样是"到本节点的距离"）。
+     * 前提：{@code ids}/{@code scores} 已按离 q 的距离升序排列（{@link #searchLayer} 收集出来的
+     * 就是这个顺序，反向修剪用的邻居表 score 同样是"到本节点的距离"）。
      * <p>
      * 代价：每接受一条边要多算几次点间距离，构建期变慢。实测 dim=128、efConstruction=200 的
      * 聚簇语料（n=20000、200 簇）下 {@code build} 约 29~38s。查询侧同样不是免费的：
      * efSearch=64 时每次查询的距离计算从 147 次涨到 251 次（图真的铺开了），换来的是
      * recall@10 从 0.32 到 1.00 —— 修之前无论把 efSearch 抬到多大（试过 1024）都到不了
      * 1.00，所以这不是"多花点数换召回"那种可以用调参抵消的取舍。
+     * <p>
+     * {@code reuse} 非 null 时，选中的边沿用 {@code reuse[i]} 这批<b>已有</b>对象（修剪路径：
+     * 候选本来就是邻居表里的成员，重造对象等于白花一次分配）；为 null 时每条存活的边新建一个
+     * {@code SearchResult}（构建路径：候选只是平行数组里的 (id, score)，没对象可沿用）。
+     * 两条路径共用这一个实现，启发式不会各自漂移。
      */
-    private List<SearchResult> selectNeighbors(Node q, SearchResult[] candidates, int M) {
+    private List<SearchResult> selectNeighbors(Node q, String[] ids, float[] scores,
+                                               SearchResult[] reuse, int n, int M) {
         List<SearchResult> selected = new ArrayList<>(M);
-        List<SearchResult> discarded = new ArrayList<>();
-        for (SearchResult cand : candidates) {
+        discardIdx = growInts(discardIdx, M);
+        int discardedSize = 0;
+        for (int i = 0; i < n; i++) {
             if (selected.size() >= M) break;
-            if (q.id.equals(cand.getVectorId())) continue; // upsert 时自己可能出现在自己的候选集里
-            Node cn = nodes.get(cand.getVectorId());
+            String candId = ids[i];
+            if (q.id.equals(candId)) continue; // upsert 时自己可能出现在自己的候选集里
+            Node cn = nodes.get(candId);
             if (cn == null) continue;
-            if (redundantToSelected(cn, cand.getScore(), selected)) {
-                discarded.add(cand);
+            if (redundantToSelected(cn, scores[i], selected)) {
+                if (discardedSize < M) discardIdx[discardedSize++] = i;
                 continue;
             }
-            selected.add(cand);
+            selected.add(kept(reuse, i, candId, scores[i]));
         }
-        // keepPrunedConnections：图要连通就不能为了"纯度"少留边，不够 M 条时用被丢弃的最近候选补齐
-        for (SearchResult c : discarded) {
+        // keepPrunedConnections：图要连通就不能为了"纯度"少留边，不够 M 条时用被丢弃的最近候选补齐。
+        // 只记前 M 条被丢弃者的下标就够：补齐循环最多消费 M - selected.size() ≤ M 条，而候选已按
+        // 距离升序，第 M+1 条被丢弃的候选永远读不到。这里必须用参数 M（第 0 层是 2M）而不是字段 M，
+        // 否则少补边、图会重新碎开。
+        for (int j = 0; j < discardedSize; j++) {
             if (selected.size() >= M) break;
-            selected.add(c);
+            int i = discardIdx[j];
+            selected.add(kept(reuse, i, ids[i], scores[i]));
         }
         return selected;
+    }
+
+    private static SearchResult kept(SearchResult[] reuse, int i, String id, float score) {
+        return reuse != null ? reuse[i] : new SearchResult(id, score);
     }
 
     /** 候选 cn 到某个已选邻居比到 q 还近 ⇒ 这条边是冗余的，可以让给它俩之间的那条。 */
@@ -823,9 +894,44 @@ public class HnswIndex implements Index {
     private void pruneNeighbors(Node node, int level, int M) {
         List<SearchResult> list = node.neighbors[level];
         if (list == null || list.size() <= M) return;
-        SearchResult[] byDist = list.toArray(new SearchResult[0]);
-        Arrays.sort(byDist, Comparator.comparingDouble(SearchResult::getScore));
-        node.neighbors[level] = new ArrayList<>(selectNeighbors(node, byDist, M));
+        int n = list.size();
+        pruneObjs = growObjects(pruneObjs, n);
+        // 传一个长度够的数组给 toArray —— 它就不会自己新建一个（这条路径每个溢出的反向边都走一遍，
+        // 自建数组实测是构建期第一大分配点）。
+        list.toArray(pruneObjs);
+        insertionSortByScore(pruneObjs, n);
+        candIds = growIds(candIds, n);
+        candScores = growFloats(candScores, n);
+        for (int i = 0; i < n; i++) {
+            candIds[i] = pruneObjs[i].getVectorId();
+            candScores[i] = pruneObjs[i].getScore();
+        }
+        // selectNeighbors 返回的就是它自己新建的列表，没有第二个持有者，不必再拷一份；
+        // reuse 传 pruneObjs ⇒ 存活的边沿用表里原有的对象，一个都不重造。
+        node.neighbors[level] = selectNeighbors(node, candIds, candScores, pruneObjs, n, M);
+        // 暂存位立刻清掉：这块数组跨插入存活，留着引用等于把这一批被修剪掉的邻居对象一直扣在场上。
+        for (int i = 0; i < n; i++) pruneObjs[i] = null;
+    }
+
+    /**
+     * 邻居表快照按距离升序 —— 手写插入排序，不用 {@code Arrays.sort(Object[], Comparator)}。
+     * <p>
+     * 这里长度只有 M+1..2M+1（只有溢出的表才进来），本来就在插入排序划算的区间；更要紧的是
+     * 第 0 层 M=16 时表长 33，刚过 TimSort 的 MIN_MERGE=32，于是每次修剪都要新建一个 TimSort
+     * 加它的 run 栈 —— JFR 采样实测这笔占构建期分配的两位数百分比。两种排序都是稳定的，
+     * score 相同时先后次序一致 ⇒ 选出来的邻居表逐条不变。
+     */
+    private static void insertionSortByScore(SearchResult[] a, int n) {
+        for (int i = 1; i < n; i++) {
+            SearchResult cur = a[i];
+            float score = cur.getScore();
+            int j = i - 1;
+            while (j >= 0 && a[j].getScore() > score) {
+                a[j + 1] = a[j];
+                j--;
+            }
+            a[j + 1] = cur;
+        }
     }
 
     /** 随机生成层级 — 指数衰减分布 */
