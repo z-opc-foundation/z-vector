@@ -89,10 +89,44 @@ class VectorServerApplicationTest {
     void healthReportsCurrentArtifactVersion() throws Exception {
         Resp r = call("GET", "/health", null);
         assertEquals(200, r.status);
-        // 曾经硬编码 1.0.1，而构件版本已是 1.0.2 —— /health 是最容易被当成事实的端点
-        assertEquals(VectorServerApplication.VERSION, r.json().get("version"));
-        assertEquals("1.0.2", r.json().get("version"), "VERSION 必须与 pom 一致");
+        // 这一条以前长这样：assertEquals("1.0.2", r.json().get("version"))，而 main 里就是同一个
+        // 字面量 —— 两边一起漂，断言永远绿（同一处错过两次：1.0.1 对 1.0.2、1.0.2 对 1.0.3）。
+        // 现在比的是 pom 的 project version：pom 改号不改编码，这条立刻红。
+        String pomVersion = projectVersionOf(new String(
+                java.nio.file.Files.readAllBytes(java.nio.file.Paths.get("pom.xml")),
+                StandardCharsets.UTF_8));
+        assertEquals(pomVersion, r.json().get("version"),
+                "/health 报的版本不等于 pom 的 project version（pom=" + pomVersion + "）");
+        assertNotEquals("unknown", r.json().get("version"),
+                "build-info.properties 没读到 ⇒ 资源过滤没生效，上面那条会退化成 unknown==unknown");
         assertEquals(1, ((Number) r.json().get("collections")).intValue());
+    }
+
+    /**
+     * {@link #projectVersionOf} 的猎物对照。真 pom 里 {@code <parent><version>} 与 project 自己的
+     * version **碰巧同值**（都是 1.0.3）⇒ 拿这份 pom 测不出"取错了那一个"，必须喂两值不同的合成 pom。
+     */
+    @Test
+    void projectVersionOfReadsProjectNotParent() {
+        String synthetic = "<project>\n"
+                + "  <parent>\n    <artifactId>z-vector</artifactId>\n    <version>9.9.9</version>\n"
+                + "  </parent>\n"
+                + "  <artifactId>z-vector-server</artifactId>\n  <version>8.8.8</version>\n"
+                + "</project>\n";
+        assertEquals("8.8.8", projectVersionOf(synthetic), "取成了 <parent> 里的版本");
+        assertEquals("7.7.7", projectVersionOf(synthetic.replace("8.8.8", "7.7.7")),
+                "解析器没在真读输入（回吐了常量）");
+    }
+
+    /** 先剥掉 {@code <parent>…</parent>}，再取第一个 {@code <version>}。 */
+    private static String projectVersionOf(String pomXml) {
+        String close = "</parent>";
+        int end = pomXml.indexOf(close);
+        String rest = end >= 0 ? pomXml.substring(end + close.length()) : pomXml;
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("<version>([^<]+)</version>").matcher(rest);
+        assertTrue(m.find(), "这份 pom 里没有 project version");
+        return m.group(1).trim();
     }
 
     // ==================== /collections ====================

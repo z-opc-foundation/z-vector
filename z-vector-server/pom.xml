@@ -75,6 +75,14 @@
     </dependencies>
 
     <build>
+        <!-- /health 报的版本取自这里过滤出来的 build-info.properties：
+             显式声明 resources 会顶掉 Maven 的默认资源目录，所以 filtering 必须写下来。 -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

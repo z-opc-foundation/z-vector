@@ -22,8 +22,27 @@ import java.util.concurrent.ExecutorService;
  */
 public class VectorServerApplication {
 
-    /** 与 pom 的 version 对齐；此前硬编码 1.0.1 而构件已是 1.0.2。 */
-    static final String VERSION = "1.0.2";
+    /**
+     * 构建期由资源过滤写进 {@code /build-info.properties}，取的就是构件自己的版本。
+     * <p>
+     * 此前这里是字面量，而且是**第二个**字面量（测试里再抄一份同值的），于是"VERSION 必须与 pom
+     * 一致"这条断言结构上不可能发现漂移：改 pom 不改编码，两边一起漂。历史实证：先硬编码 1.0.1
+     * 而构件已是 1.0.2，上一轮改成 1.0.2 而 pom 已经是 1.0.3 —— 同一处错了两次，第二次是"修法"错。
+     */
+    static final String VERSION = readBuildVersion();
+
+    private static String readBuildVersion() {
+        Properties p = new Properties();
+        try (InputStream in = VectorServerApplication.class.getResourceAsStream("/build-info.properties")) {
+            if (in != null) {
+                p.load(in);
+            }
+        } catch (IOException e) {
+            return "unknown";
+        }
+        String v = p.getProperty("version", "").trim();
+        return v.isEmpty() ? "unknown" : v;
+    }
 
     private static VectorStore vectorStore;
     private static final ObjectMapper objectMapper = new ObjectMapper();
