@@ -68,6 +68,8 @@ public class StorageEngine implements AutoCloseable {
     public static final int DEFAULT_BUFFER_PAGES = 256;
 
     private final String dataDir;
+    private final long bloomExpected;
+    private final double bloomFpRate;
     private final AsyncWalFile asyncWal;
     private final BufferPool bufferPool;
     private final ConcurrentMap<String, BloomFilter> bloomFilters = new ConcurrentHashMap<>();
@@ -79,12 +81,24 @@ public class StorageEngine implements AutoCloseable {
 
     public StorageEngine(String dataDir, WalFile walFile,
                           long bloomExpected, double bloomFpRate, int bufferPages) {
+        // 这两个值在这里就校验，而不是留到第一个集合建 bloom 时才炸：构造器是配置进来的地方，
+        // 而 bloom 可能要等到恢复期 rebuildBloom 才第一次被创建（届时栈已经离配置很远了）。
+        if (bloomExpected <= 0) throw new IllegalArgumentException("bloomExpected must be > 0");
+        if (bloomFpRate <= 0 || bloomFpRate >= 1) {
+            throw new IllegalArgumentException("bloomFpRate must be in (0, 1)");
+        }
         this.dataDir = dataDir;
+        this.bloomExpected = bloomExpected;
+        this.bloomFpRate = bloomFpRate;
         this.asyncWal = new AsyncWalFile(walFile);
         this.bufferPool = new BufferPool(bufferPages);
         LOG.info("StorageEngine initialized: dataDir={}, bloom={}@{}/page, buffer={} pages",
                 dataDir, bloomExpected, bloomFpRate, bufferPages);
     }
+
+    /** 生效中的 bloom 期望元素数 / 误判率 —— 与构造时传进来的那一对是同一个来源。 */
+    public long bloomExpected() { return bloomExpected; }
+    public double bloomFpRate() { return bloomFpRate; }
 
     // ==================== WAL（异步）====================
 
@@ -151,7 +165,7 @@ public class StorageEngine implements AutoCloseable {
      */
     public BloomFilter getOrCreateBloom(String collection) {
         return bloomFilters.computeIfAbsent(collection,
-                k -> new BloomFilter(DEFAULT_BLOOM_EXPECTED, DEFAULT_BLOOM_FP_RATE));
+                k -> new BloomFilter(bloomExpected, bloomFpRate));
     }
 
     public void markBloom(String collection, String id) {
@@ -170,9 +184,10 @@ public class StorageEngine implements AutoCloseable {
      * 已有 bloom 会被覆盖。
      */
     public void rebuildBloom(String collection, List<VectorPoint> points) {
+        // 下限用**配置的** expected，不是常量：配了 10_000 的集合恢复 3 个点时，
+        // 不该被撑成 100_000 容量（×fp 率下的位数组是实打实的堆）。
         BloomFilter bf = new BloomFilter(
-                Math.max(points.size() * 2L, DEFAULT_BLOOM_EXPECTED),
-                DEFAULT_BLOOM_FP_RATE);
+                Math.max(points.size() * 2L, bloomExpected), bloomFpRate);
         for (VectorPoint p : points) bf.add(p.getId());
         bloomFilters.put(collection, bf);
         LOG.info("Bloom filter rebuilt for '{}': {} points, fillRatio={}",
