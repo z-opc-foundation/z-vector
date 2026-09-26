@@ -14,7 +14,15 @@ import java.util.Objects;
  */
 public final class PageId {
 
-    /** 集合名 → collectionId（用 hashCode，碰撞概率极低，4B 足够）。 */
+    /**
+     * 集合名 → collectionId（取 {@code hashCode()}，4B）。
+     * <p>
+     * 两个不同名字撞成同一个 int 是可能的（概率约 1/2^32 一对），这一层没法区分——页头里存的
+     * 也就是这个 int。能保证的是<b>不再雪上加霜</b>：文件名此前取绝对值，于是
+     * {@code h} 与 {@code -h} 这一对名字必然共用一个文件，而 {@code PageStore.read(PageId)}
+     * 从不核对页头里的 id，读回来的是别人的页却一句不报（现由 {@code requireSamePage} 拦住，
+     * 文件名也改成带符号单射）。
+     */
     private final int collectionId;
     private final PageType type;
     private final int pageNo;

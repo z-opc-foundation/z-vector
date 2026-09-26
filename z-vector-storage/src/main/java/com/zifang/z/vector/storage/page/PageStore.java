@@ -28,6 +28,9 @@ import java.util.TreeSet;
  * </ul>
  * <h2>文件命名</h2>
  * {@code <dataDir>/pages_<collectionId>.pgs} — 每个集合一个文件，集合内页号 → 文件内偏移。
+ * {@code collectionId} 原样带符号写进文件名：它是集合名的 {@code hashCode()}，正负都会出现，
+ * 取绝对值会让 ± 一对名字共用同一个文件（详见 {@link #file()}）。负 hash 集合在 1.0.3 之前
+ * 落的是绝对值名，那批旧目录由 {@link #resolveFile()} 按页头归属继续延用，不改名、不复制。
  * <p>
  * <h2>线程安全</h2>
  * 内部使用 {@link RandomAccessFile}，每次操作独立打开 + 关闭（避免多线程竞争），
@@ -97,9 +100,99 @@ public class PageStore {
     /** 当前 mmap 视图（调试用）。 */
     public MmapPageReader mmapReader() { return mmapReader; }
 
-    /** 当前集合的 PageStore 文件路径 */
+    /**
+     * 当前集合的 PageStore 文件路径 —— <b>这里不能再取绝对值</b>。
+     * <p>
+     * {@code collectionId} 是集合名的 {@code hashCode()}，正负都会出现；旧写法
+     * {@code pages_<|collectionId|>.pgs} 把互为相反数的一对折成同一个文件，两个互不相干的
+     * 集合于是写进同一份页存储。实测（{@code PageStoreAbsCollisionProbe}，词典里这种名字成对
+     * 存在）："Gretel"=+2141074721 写 3 页，"nudeness"=-2141074721 再写 3 页 ⇒ 前者读回来拿到
+     * 的是<b>后者的数据</b>，CRC 合法、页号对得上，一个异常都不抛。
+     * <p>
+     * 带符号打印是单射的；正数集合的名字与旧格式逐字相同，所以只有"负 hash 集合"换名，
+     * 那批旧目录由 {@link #resolveFile()} 按页头归属继续延用。
+     */
     public Path file() {
-        return Paths.get(dataDir, "pages_" + Math.abs(collectionId) + ".pgs");
+        return Paths.get(dataDir, "pages_" + collectionId + ".pgs");
+    }
+
+    /** 旧格式（{@code Math.abs}）给负 hash 集合用的文件名；正数集合新旧同名，无需兼容。 */
+    private Path legacyFile() {
+        int abs = Math.abs(collectionId);
+        if (collectionId >= 0 || abs == collectionId) return null;
+        return Paths.get(dataDir, "pages_" + abs + ".pgs");
+    }
+
+    /** 页头里 collectionId 的偏移（magic 4B + pageType 1B）。 */
+    private static final int COLLECTION_ID_OFFSET = 5;
+
+    /**
+     * 实际要读写的那个文件。
+     * <p>
+     * 优先用 {@link #file()}；只有正名还不存在、而旧名文件存在<b>且页头确认属于本集合</b>时，
+     * 才继续用旧文件——不改名也不复制，避免"升级即丢数据"。归属判定只看第一张有效页头里的
+     * 4 字节 collectionId（不做 CRC：越是崩溃过的文件越不该因为 CRC 拒绝认领）；读不出任何
+     * 有效页、或首页属于别人，就一律不碰旧文件，从正名重新开始。
+     */
+    private Path resolveFile() {
+        Path fresh = file();
+        if (collectionId < 0) {
+            Path legacy = legacyFile();
+            if (legacy != null && !Files.exists(fresh) && legacyOwnedByUs(legacy)) {
+                return legacy;
+            }
+        }
+        return fresh;
+    }
+
+    private boolean legacyOwnedByUs(Path legacy) {
+        try (RandomAccessFile raf = new RandomAccessFile(legacy.toFile(), "r")) {
+            int count = (int) (raf.length() / pageSize);
+            byte[] header = new byte[COLLECTION_ID_OFFSET + 4];
+            for (int i = 0; i < count; i++) {
+                raf.seek((long) i * pageSize);
+                if (!readHeader(raf, header)) continue;
+                return readIntAt(header, COLLECTION_ID_OFFSET) == collectionId;
+            }
+            return false;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /** 读一页的头部前 9 字节；短读要重试补齐，"读不满"不能当成"这页不存在"。 */
+    private static boolean readHeader(RandomAccessFile raf, byte[] header) throws IOException {
+        int got = 0;
+        while (got < header.length) {
+            int n = raf.read(header, got, header.length - got);
+            if (n < 0) return false;
+            got += n;
+        }
+        for (int j = 0; j < Page.MAGIC.length; j++) {
+            if (header[j] != Page.MAGIC[j]) return false;
+        }
+        return true;
+    }
+
+    private static int readIntAt(byte[] b, int off) {
+        return ((b[off] & 0xFF) << 24) | ((b[off + 1] & 0xFF) << 16)
+                | ((b[off + 2] & 0xFF) << 8) | (b[off + 3] & 0xFF);
+    }
+
+    /**
+     * 读回来的必须就是请求的那一页。页头自带 collectionId/pageNo，但 {@link Page#deserialize}
+     * 只按字节重建、从不核对请求 —— {@code PageStoreTest.readAndWritePage} 里那句
+     * {@code assertEquals(id, p.id())} 一直只是"文件名刚好没撞上"的侥幸。
+     * <p>
+     * 类型故意不在核对范围内：{@link #compact()} 拿 {@code PageType.DATA} 当"任意类型"的占位
+     * 去逐页读，实际页可能是 INDEX/BLOOM。
+     */
+    private static void requireSamePage(Page got, PageId requested) throws IOException {
+        PageId actual = got.id();
+        if (actual.collectionId() != requested.collectionId() || actual.pageNo() != requested.pageNo()) {
+            throw new IOException("Page identity mismatch: requested " + requested
+                    + " but the slot holds " + actual + " — 这个文件被另一个集合写过");
+        }
     }
 
     /**
@@ -113,7 +206,7 @@ public class PageStore {
                     "PageStore collectionId mismatch: store=" + collectionId
                             + " page=" + id.collectionId());
         }
-        Path path = file();
+        Path path = resolveFile();
         if (!Files.exists(path)) {
             throw new IOException("PageStore file not found: " + path);
         }
@@ -127,7 +220,9 @@ public class PageStore {
                     reader = mmapReader;
                 }
             }
-            return reader.read(id);
+            Page viaMmap = reader.read(id);
+            requireSamePage(viaMmap, id);
+            return viaMmap;
         }
         long offset = (long) id.pageNo() * pageSize;
         if (offset < 0) {
@@ -142,7 +237,9 @@ public class PageStore {
             raf.seek(offset);
             byte[] buf = new byte[pageSize];
             raf.readFully(buf);
-            return Page.deserialize(buf, pageSize);
+            Page p = Page.deserialize(buf, pageSize);
+            requireSamePage(p, id);
+            return p;
         }
     }
 
@@ -163,7 +260,7 @@ public class PageStore {
                     "PageStore collectionId mismatch: store=" + collectionId
                             + " page=" + page.id().collectionId());
         }
-        Path path = file();
+        Path path = resolveFile();
         // 确保目录存在
         FileUtil.mkdirs(path.getParent().toString());
 
@@ -246,7 +343,7 @@ public class PageStore {
      * @return pageNo 映射：oldPageNo → newPageNo
      */
     public java.util.Map<Integer, Integer> compact() throws IOException {
-        Path src = file();
+        Path src = resolveFile();
         if (!Files.exists(src)) return new java.util.HashMap<>();
 
         // 收集 live pages（按 pageNo 排序，保证压缩后顺序一致）
@@ -257,15 +354,28 @@ public class PageStore {
             livePageNos.removeAll(freePages);
         }
 
-        // 写临时文件
-        Path tmp = Paths.get(dataDir, "pages_" + Math.abs(collectionId) + ".pgs.tmp");
+        // 一页都没读出来、文件却不是空的 ⇒ 这是"读不出来"，不是"真的没有"。
+        // 下面无条件 ATOMIC_MOVE 会把整个集合清空，所以这条闸是承重的：旧写法在
+        // len % pageSize != 0 时让 listPageNos 直接返回空集，"末尾多出几个字节"这件小事
+        // 就等于全库蒸发（而且 compact 的返回值是空 map，caller 看不出差别）。
+        if (livePageNos.isEmpty() && Files.size(src) > 0) {
+            LOG.warn("PageStore compact skipped: collection={}, file={}B 但读不出任何有效页 —— 保留原文件",
+                    collectionName, Files.size(src));
+            return new java.util.HashMap<>();
+        }
+
+        // 写临时文件（名字跟着 src 走，± 两个集合不再有同一个 tmp）
+        Path tmp = Paths.get(dataDir, src.getFileName().toString() + ".tmp");
         java.util.Map<Integer, Integer> mapping = new java.util.HashMap<>();
         try (RandomAccessFile raf = new RandomAccessFile(tmp.toFile(), "rw")) {
             raf.setLength(0);
             int newNo = 0;
             for (int oldNo : livePageNos) {
-                Page p = read(PageId.of(collectionName, PageType.DATA, oldNo));
-                // 写时统一改为 DATA 类型 + 新 pageNo（因为 caller 可能用了 INDEX/BLOOM 等）
+                // 这里的 id 必须用本 store 的 collectionId，不能拿 collectionName 再 hash 一次：
+                // 3 参构造器（StorageEngine / HybridSnapshot 走的就是那条）里 name 只是日志标签，
+                // "cid=5".hashCode() != 5，旧写法在第一页就抛 collectionId mismatch。
+                Page p = read(new PageId(collectionId, PageType.DATA, oldNo));
+                // 页类型保持原样（INDEX/BLOOM 不会被改成 DATA），只有 pageNo 紧凑了
                 PageId newId = new PageId(collectionId, p.id().type(), newNo);
                 Page rewritten = new Page(newId, p.payload());
                 byte[] bytes = rewritten.serialize();
@@ -297,28 +407,29 @@ public class PageStore {
      * <p>
      * 通过扫描文件长度 / pageSize 计算；对每个 slot 检查 magic 是否匹配，
      * 不匹配视为空洞（未写入），跳过。
+     * <p>
+     * 末尾凑不满一页的残页<b>只作废它自己</b>：旧写法是 {@code len % pageSize != 0} 就整个
+     * 返回空集 —— 一次没写完的追加会把成百上千页好数据判成"不存在"，再被 {@link #compact()}
+     * 拿空文件替换掉。
      */
     public Set<Integer> listPageNos() throws IOException {
-        Path path = file();
+        Path path = resolveFile();
         if (!Files.exists(path)) return new HashSet<>();
         try (RandomAccessFile raf = new RandomAccessFile(path.toFile(), "r")) {
             long len = raf.length();
-            if (len == 0 || len % pageSize != 0) return new HashSet<>();
+            if (len == 0) return new HashSet<>();
             int count = (int) (len / pageSize);
+            if (len % pageSize != 0) {
+                LOG.warn("PageStore 尾部非整页: collection={}, size={}B, pageSize={}B —— 尾部 {}B 按残页忽略",
+                        collectionName, len, pageSize, len % pageSize);
+            }
             Set<Integer> set = new HashSet<>(count);
             byte[] headerBuf = new byte[Page.MAGIC.length];
             for (int i = 0; i < count; i++) {
                 raf.seek((long) i * pageSize);
-                int read = raf.read(headerBuf);
-                if (read != Page.MAGIC.length) continue;
-                boolean magicMatch = true;
-                for (int j = 0; j < Page.MAGIC.length; j++) {
-                    if (headerBuf[j] != Page.MAGIC[j]) {
-                        magicMatch = false;
-                        break;
-                    }
-                }
-                if (magicMatch) set.add(i);
+                // 短读要补齐再判：一次 read 少几个字节不等于"这页没写过"
+                if (!readHeader(raf, headerBuf)) continue;
+                set.add(i);
             }
             return set;
         }
@@ -330,13 +441,14 @@ public class PageStore {
             mmapReader.close();
             mmapReader = null;
         }
-        Files.deleteIfExists(file());
-        LOG.info("PageStore deleted: {}", file());
+        Path path = resolveFile();
+        Files.deleteIfExists(path);
+        LOG.info("PageStore deleted: {}", path);
     }
 
     /** 当前 PageStore 的磁盘占用（字节）。 */
     public long diskSize() throws IOException {
-        Path path = file();
+        Path path = resolveFile();
         if (!Files.exists(path)) return 0;
         return Files.size(path);
     }
