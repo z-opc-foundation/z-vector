@@ -8,10 +8,10 @@
     <parent>
         <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector</artifactId>
-        <version>1.0.2</version>
+        <version>1.0.3</version>
     </parent>
     <groupId>io.github.yuku123</groupId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
 
     <artifactId>z-vector-core</artifactId>
     <packaging>jar</packaging>
@@ -55,7 +55,7 @@
         <dependency>
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector-api</artifactId>
-            <version>1.0.2</version>
+            <version>1.0.3</version>
         </dependency>
 
         <!-- z-util 复用：KMeans（替代自研）/ NdArray / Linalg / FileUtil

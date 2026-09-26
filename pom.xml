@@ -14,7 +14,7 @@
 
     <artifactId>z-vector</artifactId>
     <groupId>io.github.yuku123</groupId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
     <packaging>pom</packaging>
     <name>z-vector</name>
     <description>
@@ -245,6 +245,41 @@
             </distributionManagement>
             <build>
                 <plugins>
+                    <!-- 发布用的 pom 必须自包含：本仓的 parent 是 com.zifang:z-opc:1.0.0-SNAPSHOT，
+                         它永远不会（也不能）出现在 Central 上。带着这个 parent 发出去的构件，
+                         任何外部消费者第一次解析就报
+                         "Could not find artifact com.zifang:z-opc:pom:1.0.0-SNAPSHOT"，
+                         等于构件全废。flatten 在 process-resources 生成去掉 parent、
+                         并把继承来的版本全部写死的 pom，install/deploy 用它替换（updatePomFile）。
+                         本地 monorepo 构建链不受影响：不带 -P central 时不执行。
+                         （同款已先在 z-cache 1.3.3/1.3.4 验证： Central 上的 starter pom <parent> 计数 = 0） -->
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>flatten-maven-plugin</artifactId>
+                        <version>1.6.0</version>
+                        <inherited>true</inherited>
+                        <configuration>
+                            <updatePomFile>true</updatePomFile>
+                            <flattenMode>oss</flattenMode>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>flatten</id>
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>flatten</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>flatten.clean</id>
+                                <phase>clean</phase>
+                                <goals>
+                                    <goal>clean</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-deploy-plugin</artifactId>

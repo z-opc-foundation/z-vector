@@ -7,12 +7,12 @@
     <parent>
         <groupId>io.github.yuku123</groupId>
         <artifactId>z-vector</artifactId>
-        <version>1.0.2</version>
+        <version>1.0.3</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
     <groupId>io.github.yuku123</groupId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
     <artifactId>z-vector-server</artifactId>
     <packaging>jar</packaging>
     <name>z-vector-server</name>

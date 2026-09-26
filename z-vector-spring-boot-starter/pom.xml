@@ -8,10 +8,10 @@
     <parent>
         <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector</artifactId>
-        <version>1.0.2</version>
+        <version>1.0.3</version>
     </parent>
     <groupId>io.github.yuku123</groupId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
 
     <artifactId>z-vector-spring-boot-starter</artifactId>
     <packaging>jar</packaging>
@@ -55,17 +55,17 @@
         <dependency>
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector-api</artifactId>
-            <version>1.0.2</version>
+            <version>1.0.3</version>
         </dependency>
         <dependency>
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector-core</artifactId>
-            <version>1.0.2</version>
+            <version>1.0.3</version>
         </dependency>
         <dependency>
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector-grpc-server</artifactId>
-            <version>1.0.2</version>
+            <version>1.0.3</version>
         </dependency>
 
         <dependency>
