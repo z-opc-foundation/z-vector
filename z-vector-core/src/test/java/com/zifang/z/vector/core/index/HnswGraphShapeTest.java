@@ -153,6 +153,9 @@ class HnswGraphShapeTest {
      * 根因：{@code Collection.upsertLocked} 对已有 id 只调 {@code index.add()}、不先 remove，
      * 而 add 每次重新 randomLevel() ⇒ 同一个 id 的层数会"变小"，别的节点里指向它的高层引用当场失效。
      * 重插必须沿用原有层数。循环 30 次是为了让"重画后恰好还是同一层"这种侥幸没有容身之地。
+     * <p>
+     * 同一轮循环里还查自环：hub 就是入口点，重插它时它必然带着距离 0 出现在自己的候选集里
+     * （搜索起点就是它），少了 {@code selectNeighbors} 里那道自环过滤，它会占掉一个真邻居的名额。
      */
     @Test
     void reinsertingAnExistingIdKeepsItsLayer() {
@@ -175,9 +178,20 @@ class HnswGraphShapeTest {
             assertEquals(0, levelOf(idx, "leaf"),
                     "第 " + i + " 次重插抬高了 leaf 的层数 ⇒ layer 1/2 会凭空多出枢纽，HNSW 退化成 flat");
             assertEquals(2, idx.getMaxLevel());
+            assertNoSelfReference(idx, "第 " + i + " 次重插之后");
             // 崩溃面：add 的贪心下降 + search 的贪心下降都走一遍
             assertTrue(idx.search(v(0.31f), 2, null, Float.MAX_VALUE).size() >= 1,
                     "第 " + i + " 次重插后搜索结果不应为空");
+        }
+    }
+
+    /** 任何节点的任一层邻居表都不许包含自己。 */
+    private static void assertNoSelfReference(HnswIndex idx, String when) {
+        for (HnswPersistence.HnswNodeData d : idx.exportNodes()) {
+            for (Map.Entry<Integer, List<String>> e : d.neighbors.entrySet()) {
+                assertTrue(!e.getValue().contains(d.id),
+                        when + "：节点 " + d.id +  " 的 layer " + e.getKey() + " 邻居表里出现了自己");
+            }
         }
     }
 
@@ -196,6 +210,40 @@ class HnswGraphShapeTest {
         List<SearchResult> hits = idx.search(v(0.02f), 1, null, Float.MAX_VALUE);
         assertEquals(Arrays.asList("near"), idsOf(hits),
                 "入口点所在层比 maxLevel 低时，layer 0 仍要交出它 —— 守卫只能跳过扩展，不能放弃整次搜索");
+    }
+
+    /**
+     * keepPrunedConnections 的牙。一条直线上挤在一起的紧密点簇：除了最近的那个，其余每一点
+     * 离"已选中的邻居"都比离查询点更近 ⇒ 光靠启发式只留得下 1 条边。不拿被丢弃的候选补齐，
+     * 这个点的 layer 0 出度就是 1 —— 连通性和召回测试未必看得见（还能顺着那 1 条边走出去），
+     * 但每个这样的点都在原地削弱图。
+     */
+    @Test
+    void redundantCandidatesAreRefilledUpToTheDegreeCap() {
+        HnswIndex idx = index();
+        idx.add(new VectorPoint("b", v(1.00f)));
+        idx.add(new VectorPoint("c", v(1.02f)));
+        idx.add(new VectorPoint("d", v(1.04f)));
+        idx.add(new VectorPoint("e", v(1.06f)));
+        idx.add(new VectorPoint("f", v(1.08f)));
+        idx.add(new VectorPoint("a", v(0.00f)));
+
+        assertEquals(0, levelOf(idx, "a"), "fixture：a 只许待在 layer 0，否则出度不是这一个数");
+        List<String> nb = neighborsOf(idx, "a", 0);
+        assertEquals(5, nb.size(),
+                "5 个候选里 4 个会被冗余判据丢弃，keepPrunedConnections 必须把它们补回来，"
+                + "实际 layer 0 出度=" + nb.size() + " " + nb);
+        assertTrue(nb.containsAll(ids("b", "c", "d", "e", "f")), "补回来的必须是那 5 个点：" + nb);
+    }
+
+    private static List<String> neighborsOf(HnswIndex idx, String id, int level) {
+        for (HnswPersistence.HnswNodeData d : idx.exportNodes()) {
+            if (d.id.equals(id)) {
+                List<String> l = d.neighbors.get(level);
+                return l == null ? new ArrayList<String>() : l;
+            }
+        }
+        throw new AssertionError("node missing: " + id);
     }
 
     private static List<String> idsOf(List<SearchResult> hits) {

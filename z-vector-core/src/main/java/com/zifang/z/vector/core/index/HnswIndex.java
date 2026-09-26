@@ -69,6 +69,8 @@ public class HnswIndex implements Index {
     public static final int DEFAULT_EF_CONSTRUCTION = 200;
     public static final int DEFAULT_EF_SEARCH = 50;
     public static final int MAX_LEVEL = 16;
+    /** 层级随机数的默认种子：让同一份语料的两次 build 得到同一张图。 */
+    public static final long DEFAULT_LEVEL_SEED = 0x5EEDL;
 
     private final Distance distance;
     private final int dimension;
@@ -86,7 +88,7 @@ public class HnswIndex implements Index {
     /** 当前最大层级 */
     private volatile int maxLevel;
     /** 层级概率生成器 */
-    private final Random random = new Random();
+    private final Random random;
     /** 层级归一化因子 mL = 1/ln(M) */
     private final double mL;
 
@@ -97,6 +99,16 @@ public class HnswIndex implements Index {
     }
 
     public HnswIndex(Distance distance, int dimension, int M, int efConstruction, int efSearch) {
+        this(distance, dimension, M, efConstruction, efSearch, DEFAULT_LEVEL_SEED);
+    }
+
+    /**
+     * @param levelSeed 层级随机数的种子。同一个语料两次 {@code build} 会得到同一张图，
+     *                  这样"召回率"这类门禁才能钉死数字（不播种时同一份数据重跑会有几个点的抖动，
+     *                  红/绿就变成掷硬币）。要每次构建都换形状就自己传一个变动的值。
+     */
+    public HnswIndex(Distance distance, int dimension, int M, int efConstruction, int efSearch,
+                     long levelSeed) {
         this.distance = Objects.requireNonNull(distance, "distance");
         if (dimension <= 0) throw new IllegalArgumentException("dimension must be > 0");
         this.dimension = dimension;
@@ -106,6 +118,7 @@ public class HnswIndex implements Index {
         this.efConstruction = efConstruction;
         if (efSearch <= 0) throw new IllegalArgumentException("efSearch must be > 0");
         this.efSearch = efSearch;
+        this.random = new Random(levelSeed);
         this.mL = 1.0 / Math.log(M > 1 ? M : 2);
         this.maxLevel = -1;
     }
@@ -284,8 +297,9 @@ public class HnswIndex implements Index {
             // 从 n=5000 的 0.816 掉到 n=20000 的 0.58）。正反两个方向都按这个上限走，
             // 只放宽反向修剪会让新节点在 layer 0 依然只连 M 条边。
             int maxNb = (l == 0) ? 2 * M : M;
-            // 选择 maxNb 个最近的节点作为邻居
-            List<SearchResult> neighbors = selectNeighbors(candidates, maxNb);
+            // 从 efConstruction 个候选里按启发式挑 maxNb 条（论文 Algorithm 4）：只按"离自己最近"
+            // 取 maxNb 条会让跨簇的长程边在修剪中被同簇近邻挤光，图会碎成孤岛。
+            List<SearchResult> neighbors = selectNeighbors(node, candidates, maxNb);
             connect(node, neighbors, l);
             // 反向：把新节点加入候选邻居的邻居列表
             for (SearchResult nb : neighbors) {
@@ -484,15 +498,58 @@ public class HnswIndex implements Index {
         return arr;
     }
 
-    /** 邻居选择（Heuristic 简化版：按距离排序取 M 个） */
-    private List<SearchResult> selectNeighbors(SearchResult[] candidates, int M) {
-        int n = Math.min(M, candidates.length);
-        List<SearchResult> result = new ArrayList<>(n);
-        for (int i = 0; i < n; i++) {
-            result.add(candidates[i]);
+    /**
+     * 邻居选择 —— 论文 Algorithm 4 的启发式（extendCandidates=false、
+     * keepPrunedConnections=true）。
+     * <p>
+     * 判据是"候选离 q 比离任何一个已选邻居更近才留"，而不是"离 q 最近的 M 个"。后者会把图
+     * 掰成一堆孤岛：聚簇数据里同簇点彼此更近，任何一条跨簇边都会在修剪时被同簇的近邻挤掉，
+     * 于是从入口点出发 layer 0 只能走到极少数节点 —— {@code HnswGraphConnectivityTest} 那套
+     * 语料（n=3000、dim=128、50 簇、层级种子固定）下实测可达集只有 57/3000、
+     * recall@10@efSearch=64 = 0.647，而且 efSearch 从 64 抬到 1024 逐查询命中一位都不变
+     * （那些节点根本不在可达集里，不是 beam 太窄）。
+     * <p>
+     * 前提：{@code candidates} 已按离 q 的距离升序排列（{@link #searchLayer} 的返回就是这个
+     * 顺序，反向修剪用的邻居表 score 同样是"到本节点的距离"）。
+     * <p>
+     * 代价：每接受一条边要多算几次点间距离，构建期变慢。实测 dim=128、efConstruction=200 的
+     * 聚簇语料（n=20000、200 簇）下 {@code build} 约 29~38s。查询侧同样不是免费的：
+     * efSearch=64 时每次查询的距离计算从 147 次涨到 251 次（图真的铺开了），换来的是
+     * recall@10 从 0.32 到 1.00 —— 修之前无论把 efSearch 抬到多大（试过 1024）都到不了
+     * 1.00，所以这不是"多花点数换召回"那种可以用调参抵消的取舍。
+     */
+    private List<SearchResult> selectNeighbors(Node q, SearchResult[] candidates, int M) {
+        List<SearchResult> selected = new ArrayList<>(M);
+        List<SearchResult> discarded = new ArrayList<>();
+        for (SearchResult cand : candidates) {
+            if (selected.size() >= M) break;
+            if (q.id.equals(cand.getVectorId())) continue; // upsert 时自己可能出现在自己的候选集里
+            Node cn = nodes.get(cand.getVectorId());
+            if (cn == null) continue;
+            if (redundantToSelected(cn, cand.getScore(), selected)) {
+                discarded.add(cand);
+                continue;
+            }
+            selected.add(cand);
         }
-        return result;
+        // keepPrunedConnections：图要连通就不能为了"纯度"少留边，不够 M 条时用被丢弃的最近候选补齐
+        for (SearchResult c : discarded) {
+            if (selected.size() >= M) break;
+            selected.add(c);
+        }
+        return selected;
     }
+
+    /** 候选 cn 到某个已选邻居比到 q 还近 ⇒ 这条边是冗余的，可以让给它俩之间的那条。 */
+    private boolean redundantToSelected(Node cn, float distQ, List<SearchResult> selected) {
+        for (SearchResult s : selected) {
+            Node sn = nodes.get(s.getVectorId());
+            if (sn == null) continue;
+            if (distance.compute(cn.vector, sn.vector) < distQ) return true;
+        }
+        return false;
+    }
+
 
     /** 建立新节点与候选的连接 */
     private void connect(Node node, List<SearchResult> neighbors, int level) {
@@ -502,12 +559,13 @@ public class HnswIndex implements Index {
         node.neighbors[level].addAll(neighbors);
     }
 
-    /** 修剪邻居到 M 个 */
+    /** 修剪邻居到该层的上限 —— 与正向选择同一套启发式，否则长程边还是会被挤掉。 */
     private void pruneNeighbors(Node node, int level, int M) {
         List<SearchResult> list = node.neighbors[level];
         if (list == null || list.size() <= M) return;
-        list.sort(Comparator.comparingDouble(SearchResult::getScore));
-        node.neighbors[level] = new ArrayList<>(list.subList(0, M));
+        SearchResult[] byDist = list.toArray(new SearchResult[0]);
+        Arrays.sort(byDist, Comparator.comparingDouble(SearchResult::getScore));
+        node.neighbors[level] = new ArrayList<>(selectNeighbors(node, byDist, M));
     }
 
     /** 随机生成层级 — 指数衰减分布 */
