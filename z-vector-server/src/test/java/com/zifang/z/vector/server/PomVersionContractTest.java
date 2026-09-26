@@ -73,6 +73,22 @@ class PomVersionContractTest {
         assertEquals(0, problems.size(), "兄弟依赖的版本写错了地方：\n  " + join(problems));
     }
 
+    /**
+     * P5：flatten 必须挂在**常开**的 {@code <build><plugins>} 上，且 {@code updatePomFile=true}。
+     * <p>
+     * 这条不是洁癖，是 {@code ${revision}} 方案的承重墙：装进 ~/.m2 / 发到 Central 的 pom 必须先
+     * 把占位展开、把 parent 摘掉。改前它只挂在 central profile 上 —— 于是 {@code mvn install}
+     * 不带 {@code -P central} 时装出去的 pom 留着 {@code ${revision}}，下游按字面量找
+     * "z-vector:${revision}" 这个目录直接 404（z-cache/mq/gw/vector 的已发布 pom 已经栽在
+     * "parent 悬空"同一类问题上，实测 22 个版本 404）。
+     */
+    @Test
+    void p5_flattenIsBoundInTheAlwaysOnBuildNotOnlyInAProfile() {
+        String rootText = PomFiles.read(PomFiles.rootPom());
+        assertEquals(0, flattenProblems(rootText).size(),
+                "flatten 不再常开 ⇒ 装出去/发出去的 pom 会带着 ${revision}：" + join(flattenProblems(rootText)));
+    }
+
     // ==================== 猎物（正向对照：判据真能报出问题） ====================
     //
     // 上面三条都是"不许出现 X"。没有猎物的负向断言会把"判据失效"和"真的没有 X"读成同一个结果，
@@ -140,6 +156,26 @@ class PomVersionContractTest {
                 + siblingDep("z-vector-api", null) + "\n");
         assertEquals(1, siblingDependencyProblems(managedMissing, "synthetic-root", true).size(),
                 "P3 判据对\"dependencyManagement 漏给版本\"无感 ⇒ 模块那边会静默解析不出来");
+
+        // (5) flatten 的两支猎物：整块只在 profile 里 / updatePomFile 被关掉。反向对照 = 常开那份。
+        assertEquals(1, flattenProblems(pom(
+                "  <artifactId>z-vector</artifactId>\n  <version>${revision}</version>\n"
+                        + "  <profiles><profile><id>central</id><build><plugins>"
+                        + flattenPlugin("true") + "</plugins></build></profile></profiles>\n")).size(),
+                "P5 判据对\"flatten 只挂在 profile 上\"无感 ⇒ mvn install 会把 ${revision} 装进仓库");
+        assertEquals(1, flattenProblems(pom(
+                "  <artifactId>z-vector</artifactId>\n  <version>${revision}</version>\n"
+                        + "  <build><plugins>" + flattenPlugin("false") + "</plugins></build>\n")).size(),
+                "P5 判据对\"updatePomFile=false\"无感 ⇒ 展了但没人用，装的还是原 pom");
+        String flattenClean = pom(
+                "  <artifactId>z-vector</artifactId>\n  <version>${revision}</version>\n"
+                        + "  <build><plugins>" + flattenPlugin("true")
+                        + "<plugin><groupId>org.apache.maven.plugins</groupId>"
+                        + "<artifactId>maven-surefire-plugin</artifactId><version>3.2.5</version></plugin>"
+                        + "</plugins></build>\n");
+        assertEquals(0, flattenProblems(flattenClean).size(),
+                "P5 误伤合规写法（旁边还有一个非 flatten 插件，选择器不许跟着它一起报）："
+                        + join(flattenProblems(flattenClean)));
     }
 
     // ==================== 判定 ====================
@@ -218,6 +254,43 @@ class PomVersionContractTest {
     }
 
     // ==================== 小工具 ====================
+
+    /**
+     * 「flatten 还在常开的位置上吗」。只看 {@code <project>} 的直接子 {@code <build>} ——
+     * profile 里那份不算：{@code mvn install} 不带 {@code -P central} 时它根本不执行。
+     */
+    private static List<String> flattenProblems(String rootXml) {
+        List<String> out = new ArrayList<String>();
+        Element build = PomFiles.child(PomFiles.parse(rootXml).getDocumentElement(), "build");
+        Element plugins = build == null ? null : PomFiles.child(build, "plugins");
+        List<Element> flatten = new ArrayList<Element>();
+        if (plugins != null) {
+            for (Element p : PomFiles.children(plugins, "plugin")) {
+                if ("flatten-maven-plugin".equals(PomFiles.childText(p, "artifactId"))) {
+                    flatten.add(p);
+                }
+            }
+        }
+        if (flatten.size() != 1) {
+            out.add("常开的 <build><plugins> 里 flatten-maven-plugin 有 " + flatten.size()
+                    + " 个（应为 1 个）⇒ 装进 m2 / 发到 Central 的 pom 会留着 ${revision} 和 <parent>");
+            return out;
+        }
+        Element cfg = PomFiles.child(flatten.get(0), "configuration");
+        String updatePomFile = cfg == null ? null : PomFiles.childText(cfg, "updatePomFile");
+        if (!"true".equals(updatePomFile)) {
+            out.add("flatten 的 updatePomFile 是 " + updatePomFile + "（应为 true）"
+                    + "⇒ 展是展了，install/deploy 用的还是原 pom");
+        }
+        return out;
+    }
+
+    private static String flattenPlugin(String updatePomFile) {
+        return "<plugin><groupId>org.codehaus.mojo</groupId>"
+                + "<artifactId>flatten-maven-plugin</artifactId><version>1.6.0</version>"
+                + "<configuration><updatePomFile>" + updatePomFile + "</updatePomFile>"
+                + "<flattenMode>oss</flattenMode></configuration></plugin>";
+    }
 
     private static List<Path> modulePoms(Path rootPom) {
         List<Path> out = new ArrayList<Path>();

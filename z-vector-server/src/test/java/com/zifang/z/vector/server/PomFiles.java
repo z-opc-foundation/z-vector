@@ -100,11 +100,6 @@ final class PomFiles {
         return childText(parse(pomXml).getDocumentElement(), "version");
     }
 
-    static String parentVersionOf(String pomXml) {
-        Element parent = child(parse(pomXml).getDocumentElement(), "parent");
-        return parent == null ? null : childText(parent, "version");
-    }
-
     /**
      * {@code <properties>} 里 {@code <revision>} 的个数（不取值，只数）。定义在聚合 pom 之外
      * 任何一处都是第二个定义点 —— 数个数而不是取值，才能把"模块自己也声明了一个 revision"报出来。
