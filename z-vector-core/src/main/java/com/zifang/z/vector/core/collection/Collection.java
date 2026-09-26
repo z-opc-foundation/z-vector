@@ -119,7 +119,9 @@ public class Collection {
 
     /** upsert 的公共部分：写向量索引 + 同步 payload 倒排（调用方持写锁） */
     private void upsertLocked(VectorPoint point) {
-        VectorPoint previous = index.get(point.getId());
+        // 借用版回表：previous 只用来"这个 id 在不在"和"摘掉旧倒排"，读的是 map 本体。
+        // 下一行 index.add() 换掉的是节点上的引用，previous 仍指着旧 map，倒排摘得干净。
+        VectorPoint previous = index.getRef(point.getId());
         index.add(point);
         indexDirty = true;
         if (previous == null) {
@@ -136,13 +138,18 @@ public class Collection {
     }
 
     public VectorPoint getPoint(String id) {
-        return index.get(id);
+        // 对外边界一律复制。HnswIndex.get() 本来就现场重建，但 FlatIndex / IvfIndex 的 get()
+        // 交出的是**存着的那个点**本身：调用方 setPayload 会直接改进索引本体，payload 倒排还会
+        // 照旧值留着（下次过滤既查不到新值也摘不掉旧值）。快路径改用借用视图之后，
+        // "借用不外泄"这条线必须由这里钉死（见 PayloadIndexFastPathTest.publicPointStillIsACopy）。
+        VectorPoint p = index.getRef(id);
+        return p == null ? null : new VectorPoint(p.getId(), p.vectorRef(), p.payloadRef());
     }
 
     public boolean delete(String id) {
         lock.writeLock().lock();
         try {
-            VectorPoint existing = index.get(id);
+            VectorPoint existing = index.getRef(id);
             if (!index.remove(id)) return false;
             if (existing != null) {
                 unindexPayload(existing);
@@ -160,7 +167,7 @@ public class Collection {
         lock.writeLock().lock();
         try {
             for (String id : ids) {
-                VectorPoint existing = index.get(id);
+                VectorPoint existing = index.getRef(id);
                 if (index.remove(id)) {
                     if (existing != null) {
                         unindexPayload(existing);
@@ -251,6 +258,12 @@ public class Collection {
      * 与 {@link #filteredSearch} 的放大候选路径相比，它给出的是<b>精确</b>的"过滤后最近邻"
      * （没有 ANN 窗口漏点的问题），代价是 O(命中数) 次距离计算 —— 所以只在命中集"够小"时
      * 采用；命中集接近全量时，在图上跑一遍窗口反而更便宜，返回 {@code null} 让给慢路径。
+     * <p>
+     * <b>只在命中集的"够小"这一侧省：</b>没进前 K 的点连 {@link SearchResult} 都不建。
+     * 建一个就要复制一份 payload（结果生命周期长于查询，那次复制是真实保护），而快路径
+     * 上限是 {@code max(topK*8, size/64)} 个命中、只返回 topK —— 80 命中取 10 的配置里，
+     * 那 70 份当场就是垃圾（实测约占整次查询分配量的三分之二，见
+     * {@code CollectionFastPathAllocationTest} 钉的字节线）。
      *
      * @return 精确结果；{@code null} 表示"这次答不了"，调用方走慢路径
      */
@@ -261,9 +274,19 @@ public class Collection {
         int size = index.size();
         if (ids.size() > Math.max((long) topK * FILTER_OVERFETCH, size / 64)) return null;
 
-        List<SearchResult> hits = new ArrayList<>(Math.min(topK * 2, ids.size()));
+        // 定长插入式选择，结果与"全量收集 + 稳定升序排序 + 截断前 K"逐元素相同：
+        //   - 满了且 d 不严格优于已保留的最差值 ⇒ 丢（等距离保住先来者，与稳定排序截断后一致）；
+        //   - 插入时只把 Float.compare 判定"更差"的槽位后移（等距离不后移 ⇒ 后来者排在其后）。
+        // 比较一律走 Float.compare 而不是裸 </>：它和旧写法（Comparator.comparingDouble 的
+        // Double.compare，作用在 float 提升后的分数上）对每个 float 值判序一致 —— NaN 判最大、
+        // -0.0 排在 0.0 前（IP 度量下与查询正交的点分数恰好是 -0.0f）。
+        // best[i].getId() 就是倒排里的那个 id —— 三个索引都按 p.getId() 建键（见 Index.getRef）。
+        VectorPoint[] best = new VectorPoint[topK];
+        float[] scores = new float[topK];
+        int kept = 0;
         for (String id : ids) {
-            VectorPoint p = index.get(id);
+            // 回表借用节点本体：读完就走，不 clone 向量也不复制 payload 表
+            VectorPoint p = index.getRef(id);
             if (p == null) {
                 // 倒排说"有这个点"、向量索引说"没有" ⇒ 两边不同步，宁可整体退回慢路径，
                 // 也不要拿半截结果冒充精确答案
@@ -271,11 +294,23 @@ public class Collection {
             }
             float d = distance.compute(query, p.vectorRef());
             if (d > maxDistance) continue;
-            hits.add(new SearchResult(id, d, p.getPayload()));
+            if (kept == topK && Float.compare(d, scores[topK - 1]) >= 0) continue;
+            int at = (kept == topK) ? topK - 1 : kept;
+            while (at > 0 && Float.compare(scores[at - 1], d) > 0) {
+                scores[at] = scores[at - 1];
+                best[at] = best[at - 1];
+                at--;
+            }
+            scores[at] = d;
+            best[at] = p;
+            if (kept < topK) kept++;
         }
-        hits.sort(Comparator.comparingDouble(SearchResult::getScore));
+        List<SearchResult> hits = new ArrayList<>(kept);
+        for (int i = 0; i < kept; i++) {
+            hits.add(new SearchResult(best[i].getId(), scores[i], best[i].payloadRef()));
+        }
         payloadFastPath.incrementAndGet();
-        return hits.size() > topK ? new ArrayList<>(hits.subList(0, topK)) : hits;
+        return hits;
     }
 
     public List<List<SearchResult>> searchBatch(List<float[]> queries, int topK, Filter filter) {
@@ -384,9 +419,9 @@ public class Collection {
     }
 
     private void unindexPayload(VectorPoint p) {
-        Map<String, Object> payload = p.getPayload();
-        if (payload == null) return;
-        for (Map.Entry<String, Object> e : payload.entrySet()) {
+        // 只读遍历，且调用方传进来的多是索引借出的节点本体 ⇒ 走引用版，省掉
+        // getPayload() 那层每调用一次的 unmodifiableMap 壳
+        for (Map.Entry<String, Object> e : p.payloadRef().entrySet()) {
             if (isIndexable(e.getValue())) payloadIndex.remove(e.getKey(), e.getValue(), p.getId());
         }
     }

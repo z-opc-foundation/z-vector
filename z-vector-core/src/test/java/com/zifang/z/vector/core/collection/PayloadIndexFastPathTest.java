@@ -22,6 +22,7 @@ import java.util.Set;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -84,6 +85,13 @@ class PayloadIndexFastPathTest {
 
     private static Set<String> idsOf(List<SearchResult> results) {
         Set<String> ids = new LinkedHashSet<>();
+        for (SearchResult r : results) ids.add(r.getVectorId());
+        return ids;
+    }
+
+    /** 同上，但保留顺序 —— 钉"第 i 条就是第 i 近"时不能用集合比对糊过去。 */
+    private static List<String> orderedIds(List<SearchResult> results) {
+        List<String> ids = new ArrayList<>(results.size());
         for (SearchResult r : results) ids.add(r.getVectorId());
         return ids;
     }
@@ -333,6 +341,74 @@ class PayloadIndexFastPathTest {
                 "a payload-less index must not claim filtered matches it cannot verify");
     }
 
+    // ==================== 截断：命中集远大于 topK ====================
+
+    /**
+     * 快路径只对命中集全量算距离，但<b>只交出 topK 条</b> —— 现在的实现连"没进前 K"的点
+     * 都不再造 {@link SearchResult}。这条测试钉的是省法的边界：截断发生在一半的命中上时，
+     * 交出来的仍然要和暴力法<b>逐条同序同名</b>（不只是同一个集合 —— 顺序是上层再截 topK 的依据）。
+     */
+    @Test
+    void truncatingALargeHitSetStaysExactAndOrdered() {
+        List<VectorPoint> pts = rarePoints(16, "rare");        // 1000/16 ⇒ 63 个命中
+        Collection coll = newCollection(IndexType.HNSW, pts);
+        float[] q = query(20);
+
+        List<SearchResult> hits = coll.search(q, 10, Filter.eq("tag", "rare"));
+        assertEquals(1, coll.payloadFastPathHits(), "63 hits must still be served by the fast path");
+        List<String> exact = bruteForce(pts, q, 10, p -> "rare".equals(p.get("tag")));
+        assertEquals(10, exact.size(), "fixture must have far more hits than topK, got " + exact);
+        // 有序逐条比对，不是集合比对：随机向量下距离两两不同，所以"同名同序"是能钉死的强判据
+        assertEquals(exact, orderedIds(hits),
+                "fast path truncated to a different top-10 than brute force");
+    }
+
+    /**
+     * 前 K 的边界上挤着一组等距离点时的判据。<b>哪一个胜出不是契约的一部分</b> —— 命中 id
+     * 集合来自 {@code PayloadIndex} 的 {@code HashSet} 副本，它的遍历顺序既不是写入顺序也
+     * 不是字典序，旧写法（全量排序 + 稳定截断）同样是"按那个顺序先到先得"。所以这里钉三件
+     * 真实可判的：条数、每条的距离（逐位等于暴力法第 i 近）、以及"严格更近的一个不许漏"。
+     */
+    @Test
+    void tiesAtTheCutOffKeepEveryCloserPointAndAnExactScoreProfile() {
+        int dim = 4;
+        List<VectorPoint> pts = new ArrayList<>();
+        Map<String, Object> tag = new HashMap<>();
+        tag.put("tag", "t");
+        // a 唯一最近；b/c/d 是同一个向量的三份拷贝 ⇒ 与查询等距，正好压在 topK=3 的边界外沿
+        pts.add(new VectorPoint("a", new float[]{9f, 0f, 0f, 0f}, tag));
+        pts.add(new VectorPoint("b", new float[]{0f, 5f, 0f, 0f}, tag));
+        pts.add(new VectorPoint("c", new float[]{0f, 5f, 0f, 0f}, tag));
+        pts.add(new VectorPoint("d", new float[]{0f, 5f, 0f, 0f}, tag));
+        Map<String, Object> cfg = new HashMap<>();
+        cfg.put("efSearch", 50);
+        Collection coll = new Collection(new VectorCollection("ties", dim,
+                DistanceMetric.L2, IndexType.HNSW, cfg));
+        coll.upsertBatch(pts);
+        coll.buildIndex();
+        float[] q = new float[]{9f, 5f, 0f, 0f};
+
+        List<SearchResult> first = coll.search(q, 3, Filter.eq("tag", "t"));
+        List<SearchResult> second = coll.search(q, 3, Filter.eq("tag", "t"));
+        assertEquals(2, coll.payloadFastPathHits(), "4 hits with topK=3 must use the fast path");
+
+        L2Distance dist = new L2Distance();
+        float tieScore = dist.compute(q, new float[]{0f, 5f, 0f, 0f});
+        float closerScore = dist.compute(q, new float[]{9f, 0f, 0f, 0f});
+        assertTrue(closerScore < tieScore, "fixture drift: a 必须严格比 b/c/d 近");
+        assertEquals(3, first.size(), "3 of the 4 rows belong in top-3");
+        assertEquals("a", first.get(0).getVectorId(), "the strictly-closer row must never be dropped");
+        assertEquals(closerScore, first.get(0).getScore(), 0f);
+        assertEquals(tieScore, first.get(1).getScore(), 0f);
+        assertEquals(tieScore, first.get(2).getScore(), 0f);
+        for (SearchResult r : first.subList(1, 3)) {
+            assertTrue("b".equals(r.getVectorId()) || "c".equals(r.getVectorId())
+                            || "d".equals(r.getVectorId()), "leaked a non-tie row: " + r);
+        }
+        assertEquals(orderedIds(first), orderedIds(second),
+                "the same query twice must not return a different tie winner set");
+    }
+
     @Test
     void searchRangeHonoursMaxDistanceOnTheFastPath() {
         List<VectorPoint> pts = rarePoints(83, "rare");
@@ -352,5 +428,46 @@ class PayloadIndexFastPathTest {
         assertTrue(narrow.size() <= 5, "threshold cut nothing — fixture is degenerate");
         // 阈值就是第 5 近的距离 ⇒ 恰好 5 行落在阈值内（多一行说明 maxDistance 被忽略）
         assertEquals(5, narrow.size(), "exactly the 5 rows inside maxDistance, got " + narrow.size());
+    }
+
+    // ==================== 边界：借出去的视图不许漏到公开 API ====================
+
+    /**
+     * 快路径回表换成了 {@code index.getRef(id)}（直接把节点本体借给调用方），所以"公开取点
+     * 仍然交复制品"这条线必须钉死 —— 它是整套借用设计唯一的外泄口子。
+     * <p>
+     * <b>猎物在 FLAT / IVF 那一侧</b>：{@code HnswIndex.get()} 本来就现场重建（向量 clone、
+     * map 复制），而 {@code FlatIndex.get()} / {@code IvfIndex.get()} 交出的是<em>存着的那个
+     * VectorPoint 本身</em> —— 一旦 {@code getPoint} 直接转发它，调用方 {@code setPayload}
+     * 就改到了索引本体，而 payload 倒排仍按旧值记着（下次过滤既查不到新值、也摘不掉旧值）。
+     * 所以这里比的是引用同一块内存这件事本身，而不是"改完看不出效果"（改克隆永远看不出效果，
+     * 那种断言是空跑）。
+     */
+    @Test
+    void publicPointStillIsACopy() {
+        List<VectorPoint> pts = rarePoints(83, "rare");
+        for (IndexType type : Arrays.asList(IndexType.HNSW, IndexType.FLAT, IndexType.IVF)) {
+            Collection coll = newCollection(type, pts);
+            VectorPoint got = coll.getPoint("d0");
+            VectorPoint stored = coll.getIndex().getRef("d0");
+            assertTrue(got != null && stored != null, type + ": fixture point missing");
+
+            assertNotSame(got.vectorRef(), stored.vectorRef(),
+                    type + ": getPoint() handed out the index's own float[] — mutating it writes"
+                            + " the store through the public API");
+            assertNotSame(got.payloadRef(), stored.payloadRef(),
+                    type + ": getPoint() handed out the index's own payload map");
+
+            got.setPayload("seq", -7);        // 改这份复制品
+            got.setPayload("poison", "yes");
+            assertEquals(pts.get(0).getPayload().get("seq"), coll.getPoint("d0").getPayload().get("seq"),
+                    type + ": mutating a returned point leaked into the index");
+            assertTrue(coll.search(query(22), 10, Filter.eq("seq", -7)).isEmpty(),
+                    type + ": the inverted index picked up a mutation made on a returned copy");
+            assertTrue(coll.search(query(22), 10, Filter.eq("poison", "yes")).isEmpty(),
+                    type + ": a field added to a returned copy became filterable");
+            assertTrue(coll.getPoint("d0").getPayload().get("lang") != null,
+                    type + ": fixture payload lost");
+        }
     }
 }

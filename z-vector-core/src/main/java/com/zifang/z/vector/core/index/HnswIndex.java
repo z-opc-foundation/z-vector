@@ -657,6 +657,18 @@ public class HnswIndex implements Index {
         return new VectorPoint(n.id, n.vector, n.payloadRef != null ? n.payloadRef : new java.util.HashMap<>());
     }
 
+    /**
+     * 节点存的是 {@code float[]} + payload 引用，本没有 VectorPoint 可给 —— {@link #get} 每次
+     * 现场重建一个，代价是构造器把向量 clone 一遍、map 再复制一遍（dim=128 实测 784 B/次）。
+     * 回表路径读完就走，那份拷贝纯浪费，所以这里给借用视图；对外仍然只有 {@link #get}。
+     */
+    @Override
+    public VectorPoint getRef(String id) {
+        Node n = nodes.get(id);
+        if (n == null || tombstones.containsKey(id)) return null;
+        return VectorPoint.ref(n.id, n.vector, n.payloadRef);
+    }
+
     @Override
     public List<VectorPoint> entries() {
         List<VectorPoint> all = new ArrayList<>(nodes.size());

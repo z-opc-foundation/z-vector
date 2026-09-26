@@ -72,6 +72,18 @@ public interface Index {
     VectorPoint get(String id);
 
     /**
+     * {@link #get(String)} 的借用版 —— 给"按 id 回表只为读一眼向量/payload"的内部热路径用
+     * （过滤搜索逐条命中、upsert/delete 取旧 payload 摘倒排）。
+     * <p>
+     * 约定同 {@code VectorPoint.ref}：返回的点里数组与 map 是存储本体，调用方不得修改、不得
+     * 长期持有、不得把它交给外部。默认实现退回 {@link #get(String)}（Flat/IVF 的 {@code get}
+     * 本来就返回存好的点，没有可省的拷贝）；只有真正把点重建出来的索引覆盖它才有意义。
+     */
+    default VectorPoint getRef(String id) {
+        return get(id);
+    }
+
+    /**
      * 获取所有当前向量点（用于索引重建）
      */
     java.util.List<VectorPoint> entries();
