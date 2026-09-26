@@ -17,7 +17,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -87,8 +86,16 @@ public class HnswIndex implements Index {
 
     /** 节点存储: id → 节点 */
     private final Map<String, Node> nodes = new ConcurrentHashMap<>();
-    /** 逻辑删除的 id */
-    private final Set<String> tombstones = ConcurrentHashMap.newKeySet();
+    /**
+     * 逻辑删除的 id → 它<b>生前的层级</b>。
+     * <p>
+     * 层级必须跟着墓碑一起记住：{@link #remove} 不会去擦别人邻居表里指向本 id 的边（代价是
+     * O(n·M)，没有向量库这么做），所以"第 l 层还有一条边指过来"这件事在删除之后依然成立。
+     * 重新写入同一个 id 时若让它随机到更低的层，那条边就指向了一个 {@code neighbors.length}
+     * 更小的节点。实测：删掉一个 layer≥1 的点再写回来，之后继续插入，40 个种子里 36 个在
+     * {@link #insertInternal} 的反向连接上抛 AIOOBE —— 单线程、无竞态，纯"删了再插"就能踩到。
+     */
+    private final Map<String, Integer> tombstones = new ConcurrentHashMap<>();
 
     /**
      * 节点槽位分配器 —— 只为查询期那份"已访问位图"服务。
@@ -362,7 +369,7 @@ public class HnswIndex implements Index {
         List<com.zifang.z.vector.core.index.HnswPersistence.HnswNodeData> result =
                 new ArrayList<>(nodes.size());
         for (Map.Entry<String, Node> e : nodes.entrySet()) {
-            if (tombstones.contains(e.getKey())) continue;
+            if (tombstones.containsKey(e.getKey())) continue;
             Node n = e.getValue();
             Map<Integer, List<String>> neighbors = new HashMap<>();
             for (int lvl = 0; lvl <= n.level; lvl++) {
@@ -400,6 +407,10 @@ public class HnswIndex implements Index {
                     for (String nbId : ids) {
                         com.zifang.z.vector.core.index.HnswPersistence.HnswNodeData nbData
                                 = nodeMap.get(nbId);
+                        // 这里不校验"被指向的节点活不落得到 lvl 层"，也不顺手丢掉这类边：
+                        // 快照里出现这种形状时，被引用的节点在这一层依然是合法候选，整条丢掉会
+                        // 连带丢结果（HnswGraphShapeTest.highLayerReferenceToLowLayerNodeKeepsExactTopK
+                        // 钉的就是这件事）。守卫放在使用点：卡 neighbors.length，不卡图的入口。
                         float nbDist = nbData != null
                                 ? distance.compute(data.vector, nbData.vector)
                                 : 0f;
@@ -464,14 +475,24 @@ public class HnswIndex implements Index {
         // 换一个新随机层就把图弄坏了 —— 新节点若是 level 0，所有 "layer≥1 邻居表 → 该 id" 的引用
         // 会指向一个 neighbors 数组长度只有 1 的节点，遍历到它就抛 AIOOBE。
         Node previous = nodes.get(id);
-        int level = previous != null ? previous.level : randomLevel();
+        // 墓碑里的层数要一并算进来：remove() 不擦别人指向该 id 的高层边，所以"删掉再写回来"的
+        // 节点同样不许往回退层，否则那些边当场变成悬空引用（实测 40 个种子里 36 个随后插入时抛
+        // AIOOBE，见 HnswLevelInvariantTest）。没有墓碑时 remembered 为 null，这里与改动前逐字
+        // 相同、随机数抽取次序也不变 ⇒ 同一份语料 build 出的图不变。
+        Integer remembered = tombstones.remove(id);
+        int level;
+        if (previous != null) {
+            level = previous.level;
+        } else {
+            int drawn = randomLevel();
+            level = remembered != null && remembered > drawn ? remembered.intValue() : drawn;
+        }
         // upsert 沿用旧槽位：每重写一次就换一个号的话，槽位号会随写入次数无限增长，
         // 位图也跟着长，而实际活着的节点只有 nodes.size() 个。
         Node node = new Node(id, point.getVector(), level,
                 previous != null ? previous.slot : nextSlot());
         node.payloadRef = point.getPayload();
         nodes.put(id, node);
-        tombstones.remove(id);
 
         if (entryPoint == null) {
             // 第一个点
@@ -508,14 +529,16 @@ public class HnswIndex implements Index {
             // 反向：把新节点加入候选邻居的邻居列表
             for (SearchResult nb : neighbors) {
                 Node nbNode = nodes.get(nb.getVectorId());
-                if (nbNode != null && nbNode.neighbors[l] != null) {
-                    // 反向这条边的 id 是新节点、score 才沿用候选的距离，两个字段与正向那条
-                    // 正好错开，所以这里不能共享 SearchResult 实例（正向那条的 id 是邻居自己的）。
-                    nbNode.neighbors[l].add(new SearchResult(id, nb.getScore()));
-                    // 修剪邻居列表到该层的上限
-                    if (nbNode.neighbors[l].size() > maxNb) {
-                        pruneNeighbors(nbNode, l, maxNb);
-                    }
+                // 先卡长度再卡 null：邻居表可能指着一个活不到这一层的节点（图被持久化过、
+                // 或者来自别的版本写的快照），neighbors[l] 在这种情况下直接越界。
+                if (nbNode == null || l >= nbNode.neighbors.length
+                        || nbNode.neighbors[l] == null) continue;
+                // 反向这条边的 id 是新节点、score 才沿用候选的距离，两个字段与正向那条
+                // 正好错开，所以这里不能共享 SearchResult 实例（正向那条的 id 是邻居自己的）。
+                nbNode.neighbors[l].add(new SearchResult(id, nb.getScore()));
+                // 修剪邻居列表到该层的上限
+                if (nbNode.neighbors[l].size() > maxNb) {
+                    pruneNeighbors(nbNode, l, maxNb);
                 }
             }
             epSet = new String[neighbors.size()];
@@ -539,13 +562,15 @@ public class HnswIndex implements Index {
             if (removed == null) return false;
             // 槽位回收给后面的节点用，int[] 的大小才始终跟着"活着的节点数"而不是"曾经写过的节点数"。
             freeSlots.addLast(removed.slot);
-            tombstones.add(id);
+            // 墓碑带上层数：别人邻居表里指向本 id 的边还在原位，重新写入时层数不许往回退
+            // （见 tombstones 字段与 HnswLevelInvariantTest）。
+            tombstones.put(id, removed.level);
             // 如果删除的是入口点，需要找一个新入口点
             if (id.equals(entryPoint)) {
                 entryPoint = null;
                 for (String nid : nodes.keySet()) {
                     Node n = nodes.get(nid);
-                    if (n != null && !tombstones.contains(nid)) {
+                    if (n != null && !tombstones.containsKey(nid)) {
                         if (entryPoint == null || n.level > nodes.get(entryPoint).level) {
                             entryPoint = nid;
                             maxLevel = n.level;
@@ -579,7 +604,7 @@ public class HnswIndex implements Index {
     @Override
     public VectorPoint get(String id) {
         Node n = nodes.get(id);
-        if (n == null || tombstones.contains(id)) return null;
+        if (n == null || tombstones.containsKey(id)) return null;
         return new VectorPoint(n.id, n.vector, n.payloadRef != null ? n.payloadRef : new java.util.HashMap<>());
     }
 
@@ -587,7 +612,7 @@ public class HnswIndex implements Index {
     public List<VectorPoint> entries() {
         List<VectorPoint> all = new ArrayList<>(nodes.size());
         for (Map.Entry<String, Node> e : nodes.entrySet()) {
-            if (!tombstones.contains(e.getKey())) {
+            if (!tombstones.containsKey(e.getKey())) {
                 Node n = e.getValue();
                 all.add(new VectorPoint(n.id, n.vector,
                         n.payloadRef != null ? n.payloadRef : new java.util.HashMap<>()));
@@ -635,7 +660,7 @@ public class HnswIndex implements Index {
                 int ord = sc.far[i];
                 Node n = sc.nodeAt[ord];
                 float dist = sc.distAt[ord];
-                if (tombstones.contains(n.id)) continue;
+                if (tombstones.containsKey(n.id)) continue;
                 if (dist > maxDistance) continue;
                 Map<String, Object> payload = n.payloadRef;
                 if (filterPayload != null && !matchesFilter(payload, filterPayload)) continue;

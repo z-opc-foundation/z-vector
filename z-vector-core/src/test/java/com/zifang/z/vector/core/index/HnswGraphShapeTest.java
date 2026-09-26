@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 单元测试里偶尔见红、复跑又绿，是因为它要撞上图形状才会出现，而不是真偶发。
  * <p>
  * 这里用 {@link HnswIndex#importNodes} 直接构造出这些形状（层数是入参，不靠随机），
- * 所以三条测试都是确定的：不需要播种 Random，也不受 JIT 摘栈影响。
+ * 所以每条测试都是确定的：不需要播种 Random，也不受 JIT 摘栈影响。
  */
 class HnswGraphShapeTest {
 
@@ -185,9 +186,72 @@ class HnswGraphShapeTest {
         }
     }
 
+    /**
+     * 上一条不变量的另一半：<b>删掉</b>一个"正被别人高层邻居表引用着"的 id，再把它写回来。
+     * <p>
+     * {@code remove()} 不会去擦别的节点邻居表里指向本 id 的边（那是 O(n·M)，没有向量库这么做），
+     * 而 {@code add()} 对已经不在 {@code nodes} 里的 id 会重新 {@code randomLevel()} —— 十六分之
+     * 十五的概率抽回 layer 0，于是 hub 的 layer 1/2 邻居表当场指向一个没有这一层的节点。
+     * 实测：删一个 layer≥1 的点再写回、继续插入，40 个层级种子里 36 个抛
+     * {@code ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1}，抛点在
+     * {@code insertInternal} 的反向连接（那里只判了 null、没判数组长度）—— 单线程、无竞态，
+     * 并发测试只是恰好第一个撞上它。
+     * <p>
+     * 修两层，缺一不可：墓碑记住生前的层数 ⇒ 不再<b>制造</b>这种形状；反向连接先卡长度 ⇒
+     * 已经躺在快照里的这种形状不再<b>致命</b>。后者不许省：快照来自磁盘，恢复时不校验层数
+     * （见 {@link #highLayerReferenceToLowLayerNodeKeepsExactTopK}），坏形状可能有。
+     */
+    @Test
+    void reinsertingADeletedIdKeepsItsLayer() {
+        Map<String, HnswPersistence.HnswNodeData> graph = new LinkedHashMap<>();
+        // 起点必须是一张"干净"的图，否则下面那道结构哨兵第一圈就红在自己的 fixture 上：
+        // hub(layer 2) 只在 layer 0/1 上引用 mid(layer 1)，layer 2 谁也不指。
+        graph.put("hub", node("hub", 0.30f, 2,
+                layers(ids("leaf", "mid"), ids("mid"), ids())));
+        graph.put("mid", node("mid", 0.50f, 1, layers(ids("hub"), ids("hub"))));
+        graph.put("leaf", node("leaf", 0.70f, 0, layers(ids("hub"))));
+
+        HnswIndex idx = index();
+        idx.importNodes(graph, "hub");
+        assertEquals(2, idx.getMaxLevel());
+        assertEquals(1, levelOf(idx, "mid"), "fixture：mid 必须活在 layer 1，否则没人引用它的高层");
+
+        for (int i = 0; i < 20; i++) {
+            assertTrue(idx.remove("mid"), "第 " + i + " 轮：mid 得先在盘上才谈得上删");
+            idx.add(new VectorPoint("mid", v(0.50f + i * 0.001f)));
+            int level = levelOf(idx, "mid");
+            assertTrue(level >= 1,
+                    "第 " + i + " 轮：删掉再写回把 mid 的层数从 1 退成了 " + level
+                    + " ⇒ hub 的 layer 1/2 邻居表现在指向一个没有这一层的节点");
+            // 崩溃面就在下一笔插入里：新节点会在 layer 1/2 上把 mid 当候选并往它邻居表里加反向边。
+            idx.add(new VectorPoint("x" + i, v(0.42f + i * 0.01f)));
+            assertNoEdgeBelowTargetLayer(idx, "第 " + i + " 轮删后重写之后");
+        }
+    }
+
+    /**
+     * 结构哨兵：一条记着 id 的 layer l 邻居表，只有在那个 id 还活着且活着 layer≥l 时才合法。
+     * 指向<b>已删除</b> id 的悬空边不在这里管（读侧的 null 判断负责，且快照里本来就可能有多少）。
+     */
+    private static void assertNoEdgeBelowTargetLayer(HnswIndex idx, String when) {
+        List<HnswPersistence.HnswNodeData> all = idx.exportNodes();
+        Map<String, Integer> levels = new HashMap<>();
+        for (HnswPersistence.HnswNodeData d : all) levels.put(d.id, d.level);
+        for (HnswPersistence.HnswNodeData d : all) {
+            for (Map.Entry<Integer, List<String>> nb : d.neighbors.entrySet()) {
+                for (String target : nb.getValue()) {
+                    Integer tl = levels.get(target);
+                    if (tl == null) continue;                       // 悬空边，交给 null 判断
+                    assertTrue(tl >= nb.getKey(),
+                            when + "：" + d.id + " 的 layer " + nb.getKey() + " 邻居表指着只有 "
+                            + tl + " 层的 " + target + " —— 反向连接会在这里越界");
+                }
+            }
+        }
+    }
+
     /** 任何节点的任一层邻居表都不许包含自己。 */
-    private static void assertNoSelfReference(HnswIndex idx, String when) {
-        for (HnswPersistence.HnswNodeData d : idx.exportNodes()) {
+    private static void assertNoSelfReference(HnswIndex idx, String when) {        for (HnswPersistence.HnswNodeData d : idx.exportNodes()) {
             for (Map.Entry<Integer, List<String>> e : d.neighbors.entrySet()) {
                 assertTrue(!e.getValue().contains(d.id),
                         when + "：节点 " + d.id +  " 的 layer " + e.getKey() + " 邻居表里出现了自己");
