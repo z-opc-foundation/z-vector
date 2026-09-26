@@ -4,9 +4,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -16,7 +19,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * 验证：
  * <ul>
  *   <li>基本 mmap 读：写入 N 页后用 mmap 读出，payload 必须一致；</li>
- *   <li>读性能优势：mmap 路径比 RandomAccessFile 路径更快（多轮取中位数，见 perf 测试注释）；</li>
+ *   <li>原地解析（不拷整页）与整页解析逐字节等价，且 CRC 校验照旧生效；</li>
+ *   <li>读性能优势：mmap 路径比 RandomAccessFile 路径更快（多轮取最小值之比，见 perf 测试注释）；</li>
+ *   <li>mmap 每次 read 的分配量必须显著低于 RAF 路径（零拷贝的门禁）；</li>
  *   <li>写后失效：write() 之后 mmap 视图自动反映新内容；</li>
  *   <li>invalidate 后再 read 会重新 mmap；</li>
  *   <li>close 后 isValid() 为 false；</li>
@@ -128,6 +133,83 @@ class MmapPageReaderTest {
         assertThrows(IOException.class, () -> store.read(badId));
     }
 
+    /**
+     * mmap 的原地解析（不拷整页）必须和整页解析逐字节等价 —— 覆盖 payload 长度为
+     * 0 / 1 / 中间值 / 页上限 四种形状，边界都在页头的偏移计算上。
+     */
+    @Test
+    void inPlaceParseMatchesFullPageParse() throws IOException {
+        String name = "equiv";
+        PageStore raf = new PageStore(tmpDir.toString(), name);
+        PageStore mmap = new PageStore(tmpDir.toString() + "-equiv", name).useMmap(true);
+
+        int[] lens = {0, 1, 17, 4096, Page.MAX_PAYLOAD_SIZE};
+        Random r = new Random(7);
+        for (int pageNo = 0; pageNo < lens.length; pageNo++) {
+            byte[] payload = new byte[lens[pageNo]];
+            r.nextBytes(payload);
+            PageId id = PageId.of(name, PageType.DATA, pageNo);
+            Page page = new Page(id, payload);
+            raf.write(page);
+            mmap.write(page);
+        }
+        for (int pageNo = 0; pageNo < lens.length; pageNo++) {
+            PageId id = PageId.of(name, PageType.DATA, pageNo);
+            Page viaRaf = raf.read(id);
+            Page viaMmap = mmap.read(id);
+            assertEquals(lens[pageNo], viaMmap.payloadLen(),
+                    "payloadLen lost through the in-place parser at pageNo=" + pageNo);
+            assertArrayEquals(viaRaf.payload(), viaMmap.payload(),
+                    "payload bytes differ at pageNo=" + pageNo);
+            assertEquals(viaRaf.id(), viaMmap.id(), "page id parsed wrong at pageNo=" + pageNo);
+        }
+    }
+
+    /** 直接对着 ByteBuffer 版反序列化验 CRC：破损页不能因为"少拷了一次页"就绕过校验。 */
+    @Test
+    void bufferParseRejectsCorruptedPage() {
+        PageId id = PageId.of("corrupt", PageType.DATA, 3);
+        byte[] good = new Page(id, "some stored bytes".getBytes()).serialize();
+        for (int offset : new int[]{Page.HEADER_SIZE, 200, good.length - Page.CRC_SIZE - 1}) {
+            byte[] broken = good.clone();
+            broken[offset] ^= 0x5A;
+            ByteBuffer view = ByteBuffer.wrap(broken);
+            view.position(0);
+            assertThrows(IllegalArgumentException.class,
+                    () -> Page.deserialize(view, Page.DEFAULT_PAGE_SIZE),
+                    "CRC check did not fire for a byte flipped at offset " + offset);
+        }
+    }
+
+    /** 走真实 mmap 读路径的同一件事：先正常读、破坏文件、失效重映射，这一次必须抛。 */
+    @Test
+    void mmapReadDetectsOnDiskCorruption() throws IOException {
+        PageStore store = new PageStore(tmpDir.toString(), "mmap-crc").useMmap(true);
+        PageId id = PageId.of("mmap-crc", PageType.DATA, 0);
+        store.write(new Page(id, "important bytes".getBytes()));
+        assertArrayEquals("important bytes".getBytes(), store.read(id).payload());
+
+        try (RandomAccessFile raf = new RandomAccessFile(store.file().toFile(), "rw")) {
+            raf.seek(Page.HEADER_SIZE + 2);
+            raf.writeByte(~raf.readByte() & 0xFF);
+        }
+        store.mmapReader().invalidate();
+        assertThrows(IllegalArgumentException.class, () -> store.read(id),
+                "mmap path returned a corrupted page instead of failing the CRC check");
+    }
+
+    /** 原地解析不许把调用方缓冲区的 position 弄走（重复读同一页要拿到同一结果）。 */
+    @Test
+    void bufferParseLeavesPositionUntouched() {
+        byte[] bytes = new Page(PageId.of("pos", PageType.DATA, 0), "abc".getBytes()).serialize();
+        ByteBuffer view = ByteBuffer.wrap(bytes);
+        view.position(0);
+        Page first = Page.deserialize(view, Page.DEFAULT_PAGE_SIZE);
+        assertEquals(0, view.position(), "deserialize consumed the caller's buffer position");
+        Page second = Page.deserialize(view, Page.DEFAULT_PAGE_SIZE);
+        assertArrayEquals(first.payload(), second.payload());
+    }
+
     @Test
     void mmapPathFasterThanRafPath() throws IOException {
         // 写入 200 页（共 12.5MB），跑 1000 次随机 read，比较两条路径耗时
@@ -214,9 +296,6 @@ class MmapPageReaderTest {
         // 下界，比值是加速比的可信下界；中位数会被干扰样本拖偏 —— 实测同一条断言：
         //   空机跑：median=2.02x、min-ratio=2.59x；
         //   整个 reactor 一起跑（磁盘忙）：median 掉到 0.54x（翻红），min-ratio 仍是 3.26x。
-        // 分配量只报告不断言：两条路径都是 132.5KB/read（都要拷一页 + 拷 payload），
-        // 差 0.2% 没有余量，拿它当门禁等于再埋一颗雷 —— 但它同时记下了一个待办：
-        // mmap 路径每次 read 仍在做 64KB 的整页拷贝，零拷贝的收益根本没拿到。
         double minRafMs = Double.MAX_VALUE, minMmapMs = Double.MAX_VALUE;
         for (int r = 0; r < ROUNDS; r++) {   // 成对样本各自取最小值
             double rafMs = rafRoundMs[r], mmapMs = mmapRoundMs[r];
@@ -230,6 +309,20 @@ class MmapPageReaderTest {
                 "mmap path should be ≥" + MIN_SPEEDUP + "x faster by min-of-" + ROUNDS + "; got "
                         + String.format("%.2fx", minRatio) + " (rafMin=" + minRafMs + "ms, mmapMin="
                         + minMmapMs + "ms, rounds=" + Arrays.toString(ratios) + ")");
+
+        // 这条才是"零拷贝真的做到了"的门禁，而且它是 load-independent 的：
+        // 每次 read 的分配量只由页布局决定，不受 OS 缓存冷热和并发负载影响。
+        // 实测 mmap=66,688~66,952 B/read、raf=132,472~132,794 B/read（本轮 7 次的跨度 <0.5%），
+        // 比值 0.504 —— mmap 侧只剩 payload 一份拷贝。0.75 的门槛离实测值还有一倍余量，
+        // 而只要有人在 mmap 路径上恢复"先拷一整页 byte[]"，这里立刻翻倍到 2.0 判红。
+        double maxMmapFraction = 0.75;
+        System.out.printf("[MmapPageReaderTest] mmap/raf allocation = %.3f of the RAF path%n",
+                medianMmapBytes / medianRafBytes);
+        assertTrue(medianMmapBytes <= maxMmapFraction * medianRafBytes,
+                "mmap path should allocate <" + maxMmapFraction + " of what the RAF path allocates"
+                        + " per read (i.e. only the payload, no full-page copy); got mmap="
+                        + medianMmapBytes + " B/read vs raf=" + medianRafBytes + " B/read"
+                        + " (mmap rounds=" + Arrays.toString(mmapBytesPerRead) + ")");
     }
 
     /** 跑 iterations 次随机 read，返回总耗时与该线程的分配量；每次 read 的结果都必须非空。 */

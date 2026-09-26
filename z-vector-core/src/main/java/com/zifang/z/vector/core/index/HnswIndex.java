@@ -160,7 +160,7 @@ public class HnswIndex implements Index {
                 neighbors.put(lvl, list);
             }
             result.add(new com.zifang.z.vector.core.index.HnswPersistence.HnswNodeData(
-                    n.id, n.vector, n.level, neighbors));
+                    n.id, n.vector, n.level, neighbors, n.payloadRef));
         }
         return result;
     }
@@ -194,7 +194,10 @@ public class HnswIndex implements Index {
                     neighbors[lvl] = list;
                 }
                 Node node = new Node(data.id, data.vector, data.level);
-                node.payloadRef = new HashMap<>();
+                // payload 必须跟着图一起回来：Collection 没有独立的点存储，索引就是数据本身。
+                // 这里若塞空 map，重启后 get()/search() 的 payload 全空，payload 倒排也只能
+                // 重建一张空表（过滤搜索永久退回放大候选的慢路径）。
+                node.payloadRef = data.payload != null ? data.payload : new HashMap<>();
                 for (int lvl = 0; lvl <= data.level; lvl++) {
                     node.neighbors[lvl] = neighbors[lvl];
                 }

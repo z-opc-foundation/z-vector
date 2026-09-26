@@ -95,6 +95,38 @@ class PageStoreTest {
                 () -> Page.deserialize(serialized, Page.DEFAULT_PAGE_SIZE));
     }
 
+    /**
+     * 页头里的 payloadLen 是从磁盘读来的字节，没校验过就不能当数组长度用。
+     * <p>
+     * 这里构造一份 "CRC 自洽、但 payloadLen 声称整页都是数据" 的页：CRC 按改写后的头重算过，
+     * 所以 CRC 那道关一定放行 —— 能拦住它的只有 payloadLen 边界检查。少了它，两条反序列化
+     * 路径会分别抛 BufferUnderflowException / IndexOutOfBoundsException，把"页头坏了"
+     * 报成一个看不出所以然的运行时异常。
+     */
+    @Test
+    void payloadLenBeyondPageRejected() {
+        PageId id = PageId.of("test", PageType.DATA, 0);
+        int pageSize = Page.DEFAULT_PAGE_SIZE;
+        byte[] forged = new Page(id, "real payload".getBytes()).serialize();
+        writeInt(forged, 13, pageSize);            // payloadLen = 整页，超过 pageSize-HEADER-CRC
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(forged, 0, pageSize - Page.CRC_SIZE);
+        writeInt(forged, pageSize - Page.CRC_SIZE, (int) crc.getValue());
+
+        java.nio.ByteBuffer view = java.nio.ByteBuffer.wrap(forged);
+        assertThrows(IllegalArgumentException.class, () -> Page.deserialize(forged, pageSize),
+                "byte[] parser trusted an out-of-range payloadLen");
+        assertThrows(IllegalArgumentException.class, () -> Page.deserialize(view, pageSize),
+                "ByteBuffer parser trusted an out-of-range payloadLen");
+    }
+
+    private static void writeInt(byte[] buf, int offset, int value) {
+        buf[offset]     = (byte) ((value >>> 24) & 0xFF);
+        buf[offset + 1] = (byte) ((value >>> 16) & 0xFF);
+        buf[offset + 2] = (byte) ((value >>> 8) & 0xFF);
+        buf[offset + 3] = (byte) (value & 0xFF);
+    }
+
     @Test
     void readNonexistentFileThrows() {
         PageStore store = new PageStore(tmpDir.toString(), "missing");

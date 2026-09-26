@@ -137,6 +137,7 @@ public final class Page {
             throw new IllegalArgumentException("byte array too small: " +
                     (bytes == null ? 0 : bytes.length));
         }
+        checkPageSize(pageSize);
         // magic
         for (int i = 0; i < 4; i++) {
             if (bytes[i] != MAGIC[i]) {
@@ -147,6 +148,7 @@ public final class Page {
         int collectionId = readInt(bytes, 5);
         int pageNo = readInt(bytes, 9);
         int payloadLen = readInt(bytes, 13);
+        checkPayloadLen(payloadLen, pageSize);
         // CRC32 校验
         java.util.zip.CRC32 crc = new java.util.zip.CRC32();
         crc.update(bytes, 0, pageSize - CRC_SIZE);
@@ -160,6 +162,89 @@ public final class Page {
         System.arraycopy(bytes, HEADER_SIZE, payload, 0, payloadLen);
         PageId id = new PageId(collectionId, type, pageNo);
         return new Page(id, payload, payloadLen, pageSize);
+    }
+
+    /**
+     * 从缓冲区原地反序列化一页 —— {@link MmapPageReader} 走这条，不做整页拷贝。
+     * <p>
+     * 与 {@link #deserialize(byte[], int)} 的唯一区别：这里只有 payload 会落到新数组上，
+     * 头部/CRC 用绝对下标读，CRC 分块喂给一个复用的 scratch 缓冲。读一页 64KB 因此少分配
+     * 整整 64KB（Java 8 没有 {@code CRC32.update(ByteBuffer)}，所以必须过一块可复用的数组）。
+     * <p>
+     * 调用期间会移动 {@code page} 的 position（返回前复原），所以同一个缓冲区实例不能跨线程共享：
+     * mmap 路径每次 read 传自己的 {@code duplicate()}。
+     */
+    public static Page deserialize(ByteBuffer page, int pageSize) {
+        if (page == null) throw new IllegalArgumentException("buffer is null");
+        checkPageSize(pageSize);
+        final int base = page.position();
+        if (page.remaining() < pageSize) {
+            throw new IllegalArgumentException("buffer has " + page.remaining()
+                    + " bytes remaining, need a full page of " + pageSize);
+        }
+        try {
+            for (int i = 0; i < 4; i++) {
+                if (page.get(base + i) != MAGIC[i]) {
+                    throw new IllegalArgumentException("Invalid page magic at offset " + i);
+                }
+            }
+            PageType type = PageType.fromCode(page.get(base + 4));
+            int collectionId = readInt(page, base + 5);
+            int pageNo = readInt(page, base + 9);
+            int payloadLen = readInt(page, base + 13);
+            checkPayloadLen(payloadLen, pageSize);
+
+            java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+            byte[] chunk = CRC_SCRATCH.get();
+            int toCheck = pageSize - CRC_SIZE;
+            page.position(base);
+            while (toCheck > 0) {
+                int n = Math.min(chunk.length, toCheck);
+                page.get(chunk, 0, n);
+                crc.update(chunk, 0, n);
+                toCheck -= n;
+            }
+            int expected = (int) crc.getValue();
+            int actual = readInt(page, base + pageSize - CRC_SIZE);
+            if (expected != actual) {
+                throw new IllegalArgumentException("Page CRC mismatch (expected="
+                        + expected + ", actual=" + actual + ") — corrupted page");
+            }
+
+            byte[] payload = new byte[payloadLen];
+            if (payloadLen > 0) {
+                page.position(base + HEADER_SIZE);
+                page.get(payload, 0, payloadLen);
+            }
+            return new Page(new PageId(collectionId, type, pageNo), payload, payloadLen, pageSize);
+        } finally {
+            page.position(base);
+        }
+    }
+
+    /** CRC 分块读的复用缓冲大小。 */
+    private static final int CRC_CHUNK = 16 * 1024;
+
+    /** 每个读线程一块，避免每次 read 都为整页 CRC 分配一份拷贝。 */
+    private static final ThreadLocal<byte[]> CRC_SCRATCH = new ThreadLocal<byte[]>() {
+        @Override
+        protected byte[] initialValue() {
+            return new byte[CRC_CHUNK];
+        }
+    };
+
+    private static void checkPageSize(int pageSize) {
+        if (pageSize < HEADER_SIZE + CRC_SIZE) {
+            throw new IllegalArgumentException("pageSize too small to hold a page: " + pageSize);
+        }
+    }
+
+    /** 页头是文件里的字节，未校验前不能拿去当数组长度用（负数/超过页大小的都要当场拒掉）。 */
+    private static void checkPayloadLen(int payloadLen, int pageSize) {
+        if (payloadLen < 0 || payloadLen > pageSize - HEADER_SIZE - CRC_SIZE) {
+            throw new IllegalArgumentException("Invalid payloadLen in page header: " + payloadLen
+                    + " (pageSize=" + pageSize + ")");
+        }
     }
 
     /** 序列化为堆外 ByteBuffer（便于 mmap write）。 */
@@ -181,5 +266,13 @@ public final class Page {
                 | ((buf[offset + 1] & 0xFF) << 16)
                 | ((buf[offset + 2] & 0xFF) << 8)
                 | (buf[offset + 3] & 0xFF);
+    }
+
+    /** 绝对下标读 big-endian int：不移动 position，多线程共用同一缓冲区实例也安全。 */
+    private static int readInt(java.nio.ByteBuffer buf, int offset) {
+        return ((buf.get(offset) & 0xFF) << 24)
+                | ((buf.get(offset + 1) & 0xFF) << 16)
+                | ((buf.get(offset + 2) & 0xFF) << 8)
+                | (buf.get(offset + 3) & 0xFF);
     }
 }

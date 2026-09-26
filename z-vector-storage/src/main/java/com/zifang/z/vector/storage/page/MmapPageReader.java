@@ -67,13 +67,12 @@ public class MmapPageReader implements AutoCloseable {
             throw new IOException("Page out of range: pageNo=" + id.pageNo()
                     + " (file mapped=" + buf.capacity() + ")");
         }
-        // bulk get：MappedByteBuffer.get(byte[], offset, length) 比逐字节循环快 ~10x
-        // 使用 duplicate() 让每个线程持有独立的 position（线程安全）
-        byte[] slice = new byte[pageSize];
+        // 原地解析：duplicate() 让每个线程持有独立的 position（线程安全），它本身只分配一个小对象；
+        // 之后交给 Page.deserialize(ByteBuffer) —— 不再先拷一整页 byte[]（那是 64KB/次 read 的分配，
+        // 把 mmap "少拷贝" 的收益整个吃掉了）。
         java.nio.ByteBuffer view = buf.duplicate();
         view.position((int) offset);
-        view.get(slice, 0, pageSize);
-        return Page.deserialize(slice, pageSize);
+        return Page.deserialize(view, pageSize);
     }
 
     private synchronized MappedByteBuffer openBuffer() throws IOException {
