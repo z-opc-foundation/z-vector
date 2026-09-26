@@ -121,6 +121,43 @@ public class WalFile implements AutoCloseable {
     }
 
     /**
+     * 一批记录一次 write + 一次 fsync（group commit 真正落地的地方）。
+     * <p>
+     * 为什么要它：{@link #append} 每条记录都 {@code getFD().sync()}，所以"攒 64 条再刷"的
+     * {@link AsyncWalFile} 实际上还是在每条一次 fsync —— 批量只省了锁，没省 IO。250 上实测
+     * 一次 fsync 8.3ms、一次 2000 条的批量落盘 8ms（比值 2086 倍，同机对照），
+     * {@code MemoryStabilityTest} 的 30s flush 超时就是这么来的（本机 NVMe 只要 67us，看不见）。
+     * <p>
+     * 分段判据与 {@link #append} 逐字相同（"写之前看当前段够不够"，所以越界那条仍留在老段，
+     * 下一条才 rotate），整批写出的字节和逐条 append 完全一致 —— 这一点由
+     * {@code WalGroupCommitTest} 逐字节对拍钉住，包括批内跨段的情况。
+     */
+    public synchronized void appendBatch(List<WalRecord> records) throws IOException {
+        if (records == null || records.isEmpty()) return;
+        ByteArrayOutputStream buf = new ByteArrayOutputStream(1024);
+        for (WalRecord record : records) {
+            // buf 里的字节还没进文件，所以"当前长度"要算上它们；为空时这条判据就退化成一进
+            // 循环时的 raf.length() 检查，与 append() 完全一致（含 rotate 自己会跳过空文件）。
+            if (raf != null && raf.length() + buf.size() >= maxSegmentSize) {
+                if (buf.size() > 0) drain(buf);
+                rotate();
+            }
+            buf.write(serialize(record));
+            sequenceNumber++;
+        }
+        if (buf.size() > 0) drain(buf);
+    }
+
+    /** 把攒下的一次写下去、一次 sync —— 一个段一次 fsync。 */
+    private void drain(ByteArrayOutputStream buf) throws IOException {
+        byte[] bytes = buf.toByteArray();
+        raf.seek(raf.length());
+        raf.write(bytes);
+        raf.getFD().sync();
+        buf.reset();
+    }
+
+    /**
      * 把当前 wal.log rotate 为 wal_N.log（编号 N+1），新 wal.log 接管后续写入。
      * <p>
      * 设计参考 RocksDB log file numbering（wal.log → wal.1.log → ...），

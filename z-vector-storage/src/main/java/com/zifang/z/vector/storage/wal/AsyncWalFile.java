@@ -219,13 +219,13 @@ public class AsyncWalFile {
         }
     }
 
-    /** 把一批 records 写入底层 WalFile（一次 fsync）。 */
+    /** 把一批 records 写入底层 WalFile（一个段一次 fsync）。 */
     private void flushBatch(List<WalRecord> batch) throws IOException {
         if (batch.isEmpty()) return;
         synchronized (walFile) {
-            for (WalRecord r : batch) {
-                walFile.append(r);
-            }
+            // 这里逐条调 walFile.append() 等于每条一次 fsync，group commit 就只剩个名字：
+            // 250 上实测一次 fsync 8.3ms，7501 条要 62 秒，直接顶穿 flush() 的 30s 超时。
+            walFile.appendBatch(batch);
         }
         totalFlushed.addAndGet(batch.size());
         totalBatches.incrementAndGet();
