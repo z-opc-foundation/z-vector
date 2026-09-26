@@ -176,6 +176,22 @@ class PomVersionContractTest {
         assertEquals(0, flattenProblems(flattenClean).size(),
                 "P5 误伤合规写法（旁边还有一个非 flatten 插件，选择器不许跟着它一起报）："
                         + join(flattenProblems(flattenClean)));
+
+        // (5c) flatten 的版本闸。样本全是 250（Maven 3.6.0）上实测过的：
+        //      1.2.1 / 1.5.0 rc=0，1.6.0 / 1.7.2 / 1.7.3 rc=1（"requires Maven version 3.6.3"）。
+        //      常开的 flatten 让这条要求从"只有发布才碰"变成"每次构建都碰"，所以尺必须钉住它。
+        for (String ok : new String[]{"1.2.1", "1.5.0"}) {
+            assertEquals(0, flattenProblems(pom("  <artifactId>z-vector</artifactId>\n"
+                    + "  <version>${revision}</version>\n  <build><plugins>"
+                    + flattenPlugin("true", ok) + "</plugins></build>\n")).size(),
+                    "P5 误伤 250 实测能跑的 flatten " + ok + "（门禁机 Maven 3.6.0，rc=0）");
+        }
+        for (String bad : new String[]{"1.6.0", "1.7.3", "2.0.0"}) {
+            assertEquals(1, flattenProblems(pom("  <artifactId>z-vector</artifactId>\n"
+                    + "  <version>${revision}</version>\n  <build><plugins>"
+                    + flattenPlugin("true", bad) + "</plugins></build>\n")).size(),
+                    "P5 判据对 flatten " + bad + " 无感 ⇒ 抬版本会把 250 的构建整体打死");
+        }
     }
 
     // ==================== 判定 ====================
@@ -282,12 +298,44 @@ class PomVersionContractTest {
             out.add("flatten 的 updatePomFile 是 " + updatePomFile + "（应为 true）"
                     + "⇒ 展是展了，install/deploy 用的还是原 pom");
         }
+        // 常开之后，flatten 对 Maven 的要求就变成**全仓构建**的要求。门禁机 250 是 Maven 3.6.0，
+        // 而 1.6.0 起该插件要求 3.6.3 ⇒ 抬版本会让 250 连 `mvn clean` 都 BUILD FAILURE（09-26 实测）。
+        String version = PomFiles.childText(flatten.get(0), "version");
+        if (requiresMavenBeyondGateHost(version)) {
+            out.add("flatten-maven-plugin 钉在 " + version + "：1.6.0 起要求 Maven ≥ 3.6.3，"
+                    + "而 Java 8 门禁机 250 是 Maven 3.6.0 ⇒ 常开的 flatten 会让 250 上每一次构建"
+                    + "（含 `mvn clean`）当场失败，8 个模块一条测试都跑不到。"
+                    + "要抬版本，先在 250 实测再改这一行的判据");
+        }
         return out;
     }
 
+    /** {@code 1.6.0} 及以上：实测从这一版起插件声明 requireMavenVersion=3.6.3。 */
+    private static boolean requiresMavenBeyondGateHost(String version) {
+        if (version == null || version.contains("${")) {
+            return false;   // 缺版本/占位符由上面那条判据管，这里不重复报
+        }
+        String[] parts = version.split("\\.");
+        int major = parts.length > 0 ? parseInt(parts[0]) : 0;
+        int minor = parts.length > 1 ? parseInt(parts[1]) : 0;
+        return major > 1 || (major == 1 && minor >= 6);
+    }
+
+    private static int parseInt(String s) {
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
     private static String flattenPlugin(String updatePomFile) {
+        return flattenPlugin(updatePomFile, "1.5.0");
+    }
+
+    private static String flattenPlugin(String updatePomFile, String version) {
         return "<plugin><groupId>org.codehaus.mojo</groupId>"
-                + "<artifactId>flatten-maven-plugin</artifactId><version>1.6.0</version>"
+                + "<artifactId>flatten-maven-plugin</artifactId><version>" + version + "</version>"
                 + "<configuration><updatePomFile>" + updatePomFile + "</updatePomFile>"
                 + "<flattenMode>oss</flattenMode></configuration></plugin>";
     }
