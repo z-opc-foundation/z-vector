@@ -27,6 +27,14 @@ import static org.junit.jupiter.api.Assertions.*;
 })
 class ZVectorStarterIntegrationTest {
 
+    /** Java 8 版 Map.of（同款见 IndexFactoryParamTest.params / FilterTest.mapOf）。 */
+    private static Map<String, Object> map(Object... kv) {
+        Map<String, Object> m = new java.util.LinkedHashMap<String, Object>();
+        for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
+        return m;
+    }
+
+
     @Autowired
     VectorStore vectorStore;
 
@@ -39,9 +47,9 @@ class ZVectorStarterIntegrationTest {
     void useVectorStoreViaSpring() {
         vectorStore.createCollection("docs", 3, DistanceMetric.L2);
         vectorStore.upsert("docs", new VectorPoint("d1", new float[]{1, 0, 0},
-                Map.of("lang", "zh")));
+                map("lang", "zh")));
         vectorStore.upsert("docs", new VectorPoint("d2", new float[]{0, 1, 0},
-                Map.of("lang", "en")));
+                map("lang", "en")));
 
         List<SearchResult> results = vectorStore.search("docs",
                 new float[]{1, 0, 0}, 2, null);

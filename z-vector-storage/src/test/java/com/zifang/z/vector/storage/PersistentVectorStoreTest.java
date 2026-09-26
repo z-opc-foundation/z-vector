@@ -28,6 +28,14 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class PersistentVectorStoreTest {
 
+    /** Java 8 版 Map.of（同款见 IndexFactoryParamTest.params / FilterTest.mapOf）。 */
+    private static Map<String, Object> map(Object... kv) {
+        Map<String, Object> m = new java.util.LinkedHashMap<String, Object>();
+        for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
+        return m;
+    }
+
+
     @TempDir
     Path dataDir;
 
@@ -64,9 +72,9 @@ class PersistentVectorStoreTest {
     void upsertBatchAndSearch() {
         store.createCollection("docs", 3, DistanceMetric.COSINE);
         store.upsertBatch("docs", Arrays.asList(
-                new VectorPoint("d1", new float[]{1, 1, 0}, Map.of("lang", "zh")),
-                new VectorPoint("d2", new float[]{0, 0, 1}, Map.of("lang", "en")),
-                new VectorPoint("d3", new float[]{1, 1, 0}, Map.of("lang", "zh"))
+                new VectorPoint("d1", new float[]{1, 1, 0}, map("lang", "zh")),
+                new VectorPoint("d2", new float[]{0, 0, 1}, map("lang", "en")),
+                new VectorPoint("d3", new float[]{1, 1, 0}, map("lang", "zh"))
         ));
         assertEquals(3, store.getPointCount("docs"));
     }
@@ -127,7 +135,7 @@ class PersistentVectorStoreTest {
     @Test
     void indexType() {
         store.createCollection("docs", 3, DistanceMetric.L2,
-                IndexType.HNSW, Map.of("M", 8));
+                IndexType.HNSW, map("M", 8));
         assertEquals(IndexType.HNSW, store.getIndexType("docs"));
         store.upsert("docs", new VectorPoint("d1", new float[]{1, 0, 0}));
         store.buildIndex("docs");
@@ -172,7 +180,7 @@ class PersistentVectorStoreTest {
 
         // 阶段 1：写入 + build + flush
         store.createCollection("docs", dim, DistanceMetric.L2,
-                IndexType.HNSW, Map.of("M", 16));
+                IndexType.HNSW, map("M", 16));
         store.upsertBatch("docs", randomPoints(N, dim, 42));
         store.buildIndex("docs");
         store.flush("docs");
@@ -210,7 +218,7 @@ class PersistentVectorStoreTest {
     void hnswMissingFileFallsBackToRebuild() throws IOException {
         int dim = 8;
         store.createCollection("docs", dim, DistanceMetric.L2,
-                IndexType.HNSW, Map.of("M", 8));
+                IndexType.HNSW, map("M", 8));
         store.upsertBatch("docs", randomPoints(50, dim, 7));
         store.buildIndex("docs");
         store.flush("docs");
@@ -243,7 +251,7 @@ class PersistentVectorStoreTest {
     void hnswCorruptedFileFallsBackToRebuild() throws IOException {
         int dim = 8;
         store.createCollection("docs", dim, DistanceMetric.COSINE,
-                IndexType.HNSW, Map.of("M", 8));
+                IndexType.HNSW, map("M", 8));
         store.upsertBatch("docs", randomPoints(30, dim, 11));
         store.buildIndex("docs");
         store.flush("docs");
@@ -269,7 +277,7 @@ class PersistentVectorStoreTest {
     @Test
     void deleteCollectionRemovesHnswFile() throws IOException {
         store.createCollection("temp", 4, DistanceMetric.L2,
-                IndexType.HNSW, Map.of("M", 8));
+                IndexType.HNSW, map("M", 8));
         store.upsertBatch("temp", randomPoints(20, 4, 13));
         store.buildIndex("temp");
         store.flush("temp");
@@ -288,7 +296,7 @@ class PersistentVectorStoreTest {
     @Test
     void closePersistsHnsw() throws IOException {
         store.createCollection("docs", 4, DistanceMetric.L2,
-                IndexType.HNSW, Map.of("M", 8));
+                IndexType.HNSW, map("M", 8));
         store.upsertBatch("docs", randomPoints(40, 4, 17));
         store.buildIndex("docs");
 
@@ -317,7 +325,7 @@ class PersistentVectorStoreTest {
     void hnswSizeMismatchFallsBackToRebuild() throws IOException {
         int dim = 8;
         store.createCollection("docs", dim, DistanceMetric.L2,
-                IndexType.HNSW, Map.of("M", 8));
+                IndexType.HNSW, map("M", 8));
         store.upsertBatch("docs", randomPoints(50, dim, 23));
         store.buildIndex("docs");
         store.flush("docs");

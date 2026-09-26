@@ -65,6 +65,7 @@
         <java.version>1.8</java.version>
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
+        <!-- release 门禁不在这里，见文末 profile jdk9-plus-release-gate。 -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- 第三方依赖版本 -->
@@ -215,6 +216,8 @@
                     <configuration>
                         <source>${java.version}</source>
                         <target>${java.version}</target>
+                        <!-- 这里不放 <release>：release 走 maven.compiler.release 属性，
+                             由下面按 JDK 版本激活的 profile 提供（JDK 8 的 javac 没有 release 选项）。 -->
                     </configuration>
                 </plugin>
                 <plugin>
@@ -227,6 +230,23 @@
     </build>
 
     <profiles>
+        <!-- Java 8 兼容性的真门禁。source/target 只限制字节码版本，不限制能调用哪些 API：
+             本机 JDK 25 上 "-source 1.8 -target 1.8" 会静静收下 Map.of（实测 rc=0），
+             而 javac 的 release 开关（两个连字符）当场拒绝它。所以这道闸只在认识该开关的
+             JDK（9 及以上）上开：JDK 8 的 javac 没有 release 开关，在它上面强行开会直接
+             "Fatal error compiling: invalid flag"（250 实测），故按 jdk 版本激活。
+             两个方向都要验：9+ 上 mvn help:evaluate 该出 8、源码里塞 Map.of 该变红；
+             JDK 8 上该属性该是 undefined、mvn clean test 该全绿。
+             （XML 注释里不许出现两个连续的连字符，pom 会解析失败——这里踩过一次。） -->
+        <profile>
+            <id>jdk9-plus-release-gate</id>
+            <activation>
+                <jdk>[9,)</jdk>
+            </activation>
+            <properties>
+                <maven.compiler.release>8</maven.compiler.release>
+            </properties>
+        </profile>
         <profile>
             <id>central</id>
             <properties>

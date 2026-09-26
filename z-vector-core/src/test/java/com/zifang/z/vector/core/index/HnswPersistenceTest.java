@@ -33,6 +33,13 @@ import static org.junit.jupiter.api.Assertions.*;
  * </ol>
  */
 class HnswPersistenceTest {
+    /** Java 8 版 Map.of：仓库里已有同款（IndexFactoryParamTest.params / FilterTest.mapOf）。
+     *  用 LinkedHashMap 保住插入序，比对assertEquals 的 entry-set 语义不受影响。 */
+    private static Map<String, Object> map(Object... kv) {
+        Map<String, Object> m = new java.util.LinkedHashMap<String, Object>();
+        for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
+        return m;
+    }
 
     @TempDir
     Path tmpDir;
@@ -121,7 +128,7 @@ class HnswPersistenceTest {
             new Random(i).nextBytes(new byte[8]);
             for (int j = 0; j < dim; j++) v[j] = new Random(i).nextFloat();
             points.add(new VectorPoint("d" + i, v,
-                    java.util.Map.of("idx", i, "lang", i % 2 == 0 ? "zh" : "en")));
+                    map("idx", i, "lang", i % 2 == 0 ? "zh" : "en")));
         }
 
         HnswIndex original = new HnswIndex(new L2Distance(), dim, 8, 100, 50);
@@ -134,7 +141,7 @@ class HnswPersistenceTest {
         assertEquals(N, loaded.size());
         // 光看 size() 看不出 payload 被整体丢掉：每个点的 payload 都得逐个对
         for (int i = 0; i < N; i++) {
-            assertEquals(java.util.Map.of("idx", i, "lang", i % 2 == 0 ? "zh" : "en"),
+            assertEquals(map("idx", i, "lang", i % 2 == 0 ? "zh" : "en"),
                     loaded.get("d" + i).getPayload(),
                     "payload of d" + i + " did not survive the snapshot");
         }

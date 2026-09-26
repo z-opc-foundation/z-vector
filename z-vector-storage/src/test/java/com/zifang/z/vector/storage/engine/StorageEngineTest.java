@@ -15,6 +15,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Map;
 import java.util.List;
 import java.util.Random;
 
@@ -24,6 +25,14 @@ import static org.junit.jupiter.api.Assertions.*;
  * StorageEngine 集成测试 — 验证 page + bloom + async WAL 三者协同工作。
  */
 class StorageEngineTest {
+
+    /** Java 8 版 Map.of（同款见 IndexFactoryParamTest.params / FilterTest.mapOf）。 */
+    private static Map<String, Object> map(Object... kv) {
+        Map<String, Object> m = new java.util.LinkedHashMap<String, Object>();
+        for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
+        return m;
+    }
+
 
     @TempDir
     Path tmpDir;
@@ -141,7 +150,7 @@ class StorageEngineTest {
             float[] v = new float[4];
             for (int j = 0; j < 4; j++) v[j] = r.nextFloat();
             VectorPoint p = new VectorPoint("d_" + i, v,
-                    java.util.Map.of("idx", i));
+                    map("idx", i));
             points.add(p);
         }
 

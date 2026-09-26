@@ -14,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Map;
 import java.util.List;
 import java.util.Random;
 
@@ -26,6 +27,13 @@ import static org.junit.jupiter.api.Assertions.*;
  * 在保持召回率的前提下显著降低搜索时延。
  */
 class IndexBenchmarkTest {
+    /** Java 8 版 Map.of：仓库里已有同款（IndexFactoryParamTest.params / FilterTest.mapOf）。
+     *  用 LinkedHashMap 保住插入序，比对assertEquals 的 entry-set 语义不受影响。 */
+    private static Map<String, Object> map(Object... kv) {
+        Map<String, Object> m = new java.util.LinkedHashMap<String, Object>();
+        for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
+        return m;
+    }
 
     private static final Logger LOG = LoggerFactory.getLogger(IndexBenchmarkTest.class);
 
@@ -161,7 +169,7 @@ class IndexBenchmarkTest {
         int N = 2000;
         VectorStore store = new InMemoryVectorStore();
         store.createCollection("docs", dim, DistanceMetric.COSINE,
-                IndexType.HNSW, java.util.Map.of("M", 16));
+                IndexType.HNSW, map("M", 16));
 
         List<VectorPoint> points = randomVectors(N, dim, 42);
         store.upsertBatch("docs", points);

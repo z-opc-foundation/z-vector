@@ -41,7 +41,8 @@ import java.util.Objects;
  * List<SearchResult> vectorHits = store.search("docs", vector, 20, null);
  * List<SearchResult> ftsHits = ftsEngine.search("docs", "机器学习", 20);
  * List<SearchResult> combined = HybridSearch.rrfFuse(
- *     List.of(
+ *     Arrays.asList(          // 本库 target 是 Java 8，List.of 用不了
+ *         new SearchChannel(vectorHits, 0.7),
  *         new SearchChannel(vectorHits, 0.7),
  *         new SearchChannel(ftsHits, 0.3)
  *     ),

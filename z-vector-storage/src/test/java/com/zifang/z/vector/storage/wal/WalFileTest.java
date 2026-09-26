@@ -21,6 +21,14 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class WalFileTest {
 
+    /** Java 8 版 Map.of（同款见 IndexFactoryParamTest.params / FilterTest.mapOf）。 */
+    private static Map<String, Object> map(Object... kv) {
+        Map<String, Object> m = new java.util.LinkedHashMap<String, Object>();
+        for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
+        return m;
+    }
+
+
     @TempDir
     Path dataDir;
 
@@ -40,7 +48,7 @@ class WalFileTest {
     void appendAndRead() throws IOException {
         wal.append(WalRecord.createCollection("docs", 768, DistanceMetric.COSINE, IndexType.HNSW));
         wal.append(WalRecord.upsertPoint("docs",
-                new VectorPoint("d1", new float[]{1, 2, 3}, Map.of("lang", "zh"))));
+                new VectorPoint("d1", new float[]{1, 2, 3}, map("lang", "zh"))));
 
         List<WalRecord> records = wal.readAll();
         assertEquals(2, records.size());
@@ -73,7 +81,7 @@ class WalFileTest {
     void reopenAndReplay() throws IOException {
         wal.append(WalRecord.createCollection("docs", 768, DistanceMetric.COSINE, IndexType.HNSW));
         wal.append(WalRecord.upsertPoint("docs",
-                new VectorPoint("d1", new float[]{1, 2, 3}, Map.of("lang", "zh"))));
+                new VectorPoint("d1", new float[]{1, 2, 3}, map("lang", "zh"))));
         wal.close();
 
         wal = new WalFile(dataDir.toString());

@@ -25,6 +25,14 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class QdrantRestServerTest {
 
+    /** Java 8 版 Map.of（同款见 IndexFactoryParamTest.params / FilterTest.mapOf）。 */
+    private static Map<String, Object> map(Object... kv) {
+        Map<String, Object> m = new java.util.LinkedHashMap<String, Object>();
+        for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
+        return m;
+    }
+
+
     private static final int TEST_PORT = 16334; // 避开默认 6334
     private QdrantRestServer server;
     private VectorStore store;
@@ -113,15 +121,15 @@ class QdrantRestServerTest {
         store.createCollection("docs", 3, DistanceMetric.L2);
         store.upsertBatch("docs", java.util.Arrays.asList(
                 new com.zifang.z.vector.api.VectorPoint("d1", new float[]{1, 0, 0},
-                        Map.of("lang", "en")),
+                        map("lang", "en")),
                 new com.zifang.z.vector.api.VectorPoint("d2", new float[]{0.9f, 0.1f, 0},
-                        Map.of("lang", "zh"))
+                        map("lang", "zh"))
         ));
 
         Map<String, Object> searchBody = new LinkedHashMap<>();
         searchBody.put("vector", java.util.Arrays.asList(1, 0, 0));
         searchBody.put("limit", 10);
-        searchBody.put("filter", Map.of("lang", "en"));
+        searchBody.put("filter", map("lang", "en"));
 
         Map<String, Object> resp = httpPost("/collections/docs/points/search", searchBody);
         @SuppressWarnings("unchecked")
@@ -175,7 +183,13 @@ class QdrantRestServerTest {
         int code = conn.getResponseCode();
         InputStream is = (code >= 400) ? conn.getErrorStream() : conn.getInputStream();
         if (is == null) return new LinkedHashMap<>();
-        byte[] bytes = is.readAllBytes();
+        // InputStream.readAllBytes() 是 Java 9 API，本模块 target 1.8 —— 与
+        // QdrantRestServer.readAll 同款替身（那边的注释说明了为什么不能直接用）。
+        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream(1024);
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
+        byte[] bytes = bos.toByteArray();
         conn.disconnect();
         if (bytes.length == 0) return new LinkedHashMap<>();
         @SuppressWarnings("unchecked")

@@ -21,6 +21,13 @@ import static org.junit.jupiter.api.Assertions.*;
  * InMemoryVectorStore 综合测试 — 覆盖 Collection CRUD、向量 CRUD、搜索、过滤、索引切换。
  */
 class InMemoryVectorStoreTest {
+    /** Java 8 版 Map.of：仓库里已有同款（IndexFactoryParamTest.params / FilterTest.mapOf）。
+     *  用 LinkedHashMap 保住插入序，比对assertEquals 的 entry-set 语义不受影响。 */
+    private static Map<String, Object> map(Object... kv) {
+        Map<String, Object> m = new java.util.LinkedHashMap<String, Object>();
+        for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
+        return m;
+    }
 
     private InMemoryVectorStore store;
 
@@ -45,7 +52,7 @@ class InMemoryVectorStoreTest {
     @Test
     void createWithHnswIndex() {
         store.createCollection("docs", 768, DistanceMetric.COSINE,
-                IndexType.HNSW, Map.of("M", 32, "efConstruction", 400));
+                IndexType.HNSW, map("M", 32, "efConstruction", 400));
         VectorCollection c = store.getCollection("docs");
         assertEquals(IndexType.HNSW, c.getIndexType());
         assertEquals(32, c.getConfig().get("M"));
@@ -90,7 +97,7 @@ class InMemoryVectorStoreTest {
     @Test
     void upsertAndGetPoint() {
         store.createCollection("docs", 3, DistanceMetric.L2);
-        VectorPoint p = new VectorPoint("d1", new float[]{1f, 2f, 3f}, Map.of("lang", "zh"));
+        VectorPoint p = new VectorPoint("d1", new float[]{1f, 2f, 3f}, map("lang", "zh"));
         store.upsert("docs", p);
 
         VectorPoint got = store.getPoint("docs", "d1");
@@ -195,9 +202,9 @@ class InMemoryVectorStoreTest {
     @Test
     void searchWithSimpleFilter() {
         store.createCollection("docs", 3, DistanceMetric.L2);
-        store.upsert("docs", new VectorPoint("d1", new float[]{1, 0, 0}, Map.of("lang", "en")));
-        store.upsert("docs", new VectorPoint("d2", new float[]{0.9f, 0.1f, 0}, Map.of("lang", "zh")));
-        store.upsert("docs", new VectorPoint("d3", new float[]{0.8f, 0.2f, 0}, Map.of("lang", "en")));
+        store.upsert("docs", new VectorPoint("d1", new float[]{1, 0, 0}, map("lang", "en")));
+        store.upsert("docs", new VectorPoint("d2", new float[]{0.9f, 0.1f, 0}, map("lang", "zh")));
+        store.upsert("docs", new VectorPoint("d3", new float[]{0.8f, 0.2f, 0}, map("lang", "en")));
 
         List<SearchResult> results = store.search("docs", new float[]{1, 0, 0}, 10,
                 Filter.eq("lang", "en"));
@@ -209,9 +216,9 @@ class InMemoryVectorStoreTest {
     @Test
     void searchWithComplexFilter() {
         store.createCollection("docs", 3, DistanceMetric.L2);
-        store.upsert("docs", new VectorPoint("d1", new float[]{1, 0, 0}, Map.of("lang", "zh", "score", 0.9)));
-        store.upsert("docs", new VectorPoint("d2", new float[]{0.9f, 0.1f, 0}, Map.of("lang", "zh", "score", 0.4)));
-        store.upsert("docs", new VectorPoint("d3", new float[]{0.8f, 0.2f, 0}, Map.of("lang", "en", "score", 0.95)));
+        store.upsert("docs", new VectorPoint("d1", new float[]{1, 0, 0}, map("lang", "zh", "score", 0.9)));
+        store.upsert("docs", new VectorPoint("d2", new float[]{0.9f, 0.1f, 0}, map("lang", "zh", "score", 0.4)));
+        store.upsert("docs", new VectorPoint("d3", new float[]{0.8f, 0.2f, 0}, map("lang", "en", "score", 0.95)));
 
         // (lang=zh OR lang=en) AND score >= 0.5
         Filter f = Filter.and(
@@ -230,7 +237,7 @@ class InMemoryVectorStoreTest {
         int dim = 64;
         int N = 500;
         store.createCollection("docs", dim, DistanceMetric.L2,
-                IndexType.HNSW, Map.of("M", 16, "efConstruction", 200, "efSearch", 50));
+                IndexType.HNSW, map("M", 16, "efConstruction", 200, "efSearch", 50));
 
         // 随机生成 N 个向量
         List<VectorPoint> points = new ArrayList<>();
@@ -258,7 +265,7 @@ class InMemoryVectorStoreTest {
         int dim = 32;
         int N = 200;
         store.createCollection("docs", dim, DistanceMetric.L2,
-                IndexType.IVF, Map.of("nlist", 16, "nprobe", 8));
+                IndexType.IVF, map("nlist", 16, "nprobe", 8));
 
         List<VectorPoint> points = new ArrayList<>();
         for (int i = 0; i < N; i++) {
@@ -291,7 +298,7 @@ class InMemoryVectorStoreTest {
         // 切换到 HNSW
         store.deleteCollection("docs");
         store.createCollection("docs", dim, DistanceMetric.L2,
-                IndexType.HNSW, Map.of("M", 16));
+                IndexType.HNSW, map("M", 16));
         for (int i = 0; i < N; i++) {
             store.upsert("docs", new VectorPoint("d" + i, randomVector(dim, i)));
         }

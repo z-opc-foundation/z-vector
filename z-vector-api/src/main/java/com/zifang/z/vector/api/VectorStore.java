@@ -21,7 +21,9 @@ import java.util.Map;
  * <pre>{@code
  * VectorStore store = VectorStoreFactory.inMemory();
  * store.createCollection("docs", 768, DistanceMetric.COSINE);
- * store.upsert("docs", new VectorPoint("doc-1", new float[768], Map.of("lang", "zh")));
+ * Map<String, Object> meta = new HashMap<String, Object>();   // 本库 target 是 Java 8
+ * meta.put("lang", "zh");
+ * store.upsert("docs", new VectorPoint("doc-1", new float[768], meta));
  * List<SearchResult> hits = store.search("docs", query, 10, Filter.eq("lang", "zh"));
  * }</pre>
  */

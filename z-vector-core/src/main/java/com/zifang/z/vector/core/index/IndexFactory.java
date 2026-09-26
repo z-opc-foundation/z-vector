@@ -26,13 +26,18 @@ import java.util.Objects;
  * // 默认参数 HNSW
  * Index idx = IndexFactory.create(IndexType.HNSW, DistanceMetric.COSINE, 768);
  *
- * // 自定义 HNSW 参数
- * Index idx = IndexFactory.create(IndexType.HNSW, DistanceMetric.COSINE, 768,
- *         Map.of("M", 32, "efConstruction", 400, "efSearch", 100));
+ * // 自定义 HNSW 参数（本库 target 是 Java 8，参数表用普通 Map 装）
+ * Map<String, Object> hnsw = new HashMap<String, Object>();
+ * hnsw.put("M", 32);
+ * hnsw.put("efConstruction", 400);
+ * hnsw.put("efSearch", 100);
+ * Index idx = IndexFactory.create(IndexType.HNSW, DistanceMetric.COSINE, 768, hnsw);
  *
  * // IVF 自定义 nlist/nprobe
- * Index idx = IndexFactory.create(IndexType.IVF, DistanceMetric.L2, 768,
- *         Map.of("nlist", 256, "nprobe", 16));
+ * Map<String, Object> ivf = new HashMap<String, Object>();
+ * ivf.put("nlist", 256);
+ * ivf.put("nprobe", 16);
+ * Index idx = IndexFactory.create(IndexType.IVF, DistanceMetric.L2, 768, ivf);
  * }</pre>
  */
 public final class IndexFactory {
