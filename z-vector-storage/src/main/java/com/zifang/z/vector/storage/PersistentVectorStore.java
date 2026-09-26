@@ -28,6 +28,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -71,6 +72,9 @@ public class PersistentVectorStore implements VectorStore {
 
     private final long checkpointInterval; // 每多少条 WAL 触发一次 snapshot
     private long walRecordsSinceCheckpoint = 0;
+    /** 3 参 createCollection 未显式指定索引时采用；null = 不覆盖，走 FLAT */
+    private volatile IndexType defaultIndexType;
+    private volatile Map<String, Object> defaultIndexParams = Collections.emptyMap();
 
     public PersistentVectorStore(String dataDir) {
         this(dataDir, 1000, true); // 默认：1000 条 checkpoint + 启用 v2 引擎
@@ -265,7 +269,19 @@ public class PersistentVectorStore implements VectorStore {
 
     @Override
     public void createCollection(String name, int dimension, DistanceMetric metric) {
-        createCollection(name, dimension, metric, IndexType.FLAT, null);
+        IndexType preset = defaultIndexType;
+        if (preset == null) {
+            createCollection(name, dimension, metric, IndexType.FLAT, null);
+        } else {
+            createCollection(name, dimension, metric, preset, defaultIndexParams);
+        }
+    }
+
+    @Override
+    public void setDefaultIndex(IndexType indexType, Map<String, Object> indexParams) {
+        defaultIndexType = indexType;
+        defaultIndexParams = indexParams == null ? Collections.<String, Object>emptyMap()
+                : Collections.unmodifiableMap(new java.util.LinkedHashMap<>(indexParams));
     }
 
     @Override

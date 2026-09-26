@@ -13,6 +13,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -51,6 +53,9 @@ public class InMemoryVectorStore implements VectorStore {
 
     private final ConcurrentHashMap<String, Collection> collections = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    /** 3 参 createCollection 未显式指定索引时采用；null = 不覆盖，走 FLAT */
+    private volatile IndexType defaultIndexType;
+    private volatile Map<String, Object> defaultIndexParams = Collections.emptyMap();
 
     public InMemoryVectorStore() {
         LOG.info("InMemoryVectorStore created");
@@ -60,7 +65,19 @@ public class InMemoryVectorStore implements VectorStore {
 
     @Override
     public void createCollection(String name, int dimension, DistanceMetric metric) {
-        createCollection(name, dimension, metric, IndexType.FLAT, null);
+        IndexType preset = defaultIndexType;
+        if (preset == null) {
+            createCollection(name, dimension, metric, IndexType.FLAT, null);
+        } else {
+            createCollection(name, dimension, metric, preset, defaultIndexParams);
+        }
+    }
+
+    @Override
+    public void setDefaultIndex(IndexType indexType, Map<String, Object> indexParams) {
+        defaultIndexType = indexType;
+        defaultIndexParams = indexParams == null ? Collections.<String, Object>emptyMap()
+                : Collections.unmodifiableMap(new LinkedHashMap<>(indexParams));
     }
 
     @Override

@@ -1,5 +1,6 @@
 package com.zifang.z.vector.starter.autoconfigure;
 
+import com.zifang.z.vector.api.IndexType;
 import com.zifang.z.vector.api.VectorStore;
 import com.zifang.z.vector.core.InMemoryVectorStore;
 import com.zifang.z.vector.grpc.QdrantRestServer;
@@ -16,6 +17,7 @@ import org.springframework.context.annotation.Bean;
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
 import java.io.IOException;
+import java.util.Locale;
 
 /**
  * z-vector Spring Boot 自动装配。
@@ -58,6 +60,19 @@ public class ZVectorAutoConfiguration {
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean(VectorStore.class)
     public VectorStore vectorStore(ZVectorProperties props) {
+        VectorStore store = newStore(props);
+        ZVectorProperties.DefaultIndex di = props.getDefaultIndex();
+        String type = di.getType();
+        if (type != null && !type.trim().isEmpty()) {
+            IndexType indexType = parseIndexType(type);
+            store.setDefaultIndex(indexType, di.getParams());
+            log.info("z-vector default index for 3-arg createCollection: {} params={}",
+                    indexType, di.getParams());
+        }
+        return store;
+    }
+
+    private static VectorStore newStore(ZVectorProperties props) {
         log.info("z-vector initializing: storage-type={}, data-dir={}",
                 props.getStorageType(), props.getDataDir());
         if ("persistent".equalsIgnoreCase(props.getStorageType())) {
@@ -71,6 +86,19 @@ public class ZVectorAutoConfiguration {
             }
         }
         return new InMemoryVectorStore();
+    }
+
+    /**
+     * 配错一个字母必须让应用起不来，而不是安静地退回 FLAT —— 后者正是这一族缺陷的原型：
+     * 属性有值、日志有值、行为没有值。
+     */
+    private static IndexType parseIndexType(String raw) {
+        String v = raw.trim().toUpperCase(Locale.ROOT);
+        for (IndexType t : IndexType.values()) {
+            if (t.name().equals(v)) return t;
+        }
+        throw new IllegalStateException("zvector.default-index.type=\"" + raw + "\" is not an IndexType. "
+                + "Supported: " + java.util.Arrays.toString(IndexType.values()));
     }
 
     /**

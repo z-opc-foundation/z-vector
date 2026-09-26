@@ -48,32 +48,41 @@ for (SearchResult h : hits) {
 }
 ```
 
-### 方式二：独立 server（gRPC + REST）
+### 方式二：独立 server（REST）
 
 ```bash
-docker run -d --name z-vector -p 8181:8181 ghcr.io/z-opc-foundation/z-vector:1.0.1
+docker run -d --name z-vector -p 6333:6333 ghcr.io/z-opc-foundation/z-vector:1.0.1
 ```
 
-Spring Boot 客户端（连独立 server）：
+独立 server 是一个裸 `main()` 进程（`z-vector-server`），旋钮只有环境变量：
 
-```xml
-<dependency>
-    <groupId>io.github.yuku123</groupId>
-    <artifactId>z-vector-spring-boot-starter</artifactId>
-    <version>1.0.1</version>
-</dependency>
-```
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `ZVECTOR_PORT` | `6333` | REST 监听端口 |
+| `ZVECTOR_DATA_DIR` | `/data/zvector` | 数据目录（WAL + Snapshot） |
 
-`application.yml`:
+应用侧要么用**嵌入式** starter（方式一 + 下面的 `zvector.*` 配置），要么按<b>方式三</b>用社区
+Qdrant/Milvus 客户端打 REST/协议接口。starter **没有** "连远端 server" 的客户端模式，
+`z.vector.enabled / mode / host / port` 这一族属性在代码里不存在（Spring Boot 会连警告都不打地
+静默忽略，照着配就得到一个跑在默认端口上的嵌入式实例）—— 属性面只有一个前缀：
 
 ```yaml
-z:
-  vector:
-    enabled: true
-    mode: server                # embedded / server
-    host: localhost
-    port: 8181
+zvector:
+  storage-type: persistent       # in-memory / persistent
+  data-dir: /data/zvector
+  server:
+    port: 6334                   # 嵌入式 REST 端口（0 = 不启动）
+    auto-start: true             # false = 连 REST 生命周期 Bean 都不建
+  default-index:
+    type: HNSW                   # 留空 = 不覆盖，走 store 内置的 FLAT
+    params:                      # HNSW 认 M / efConstruction / efSearch；IVF 认 nlist / nprobe / maxIter
+      M: 16
+      efConstruction: 200
 ```
+
+`default-index` 管的是"没说用哪种索引"的那一类调用，即
+`store.createCollection(name, dimension, metric)` 这一支；显式传了 `IndexType` 的调用（含 REST
+建集合）照本宣科，不被它覆盖。写一个不存在的索引名会让应用启动失败，不会静默退回 FLAT。
 
 ```java
 @RestController
@@ -316,19 +325,30 @@ z-vector/
 
 ### Embedded 配置
 
+Spring Boot 侧的配置面只有一个前缀 `zvector`，全部键如下（多写一个键 Spring 会静默忽略，
+所以这一节之外的写法都不作数）：
+
 ```yaml
-z:
-  vector:
-    mode: embedded
-    data-dir: /var/lib/z-vector
-    buffer-pool-size: 268435456   # 256MB
-    wal:
-      enabled: true
-      group-commit-size: 64
-      group-commit-ms: 10
-    snapshot:
-      auto: true
-      interval: 300              # 5 分钟自动 Snapshot
+zvector:
+  storage-type: persistent       # in-memory / persistent
+  data-dir: /var/lib/z-vector
+  server:
+    port: 6334                   # 嵌入式 REST 端口（0 = 不启动）
+    auto-start: true             # false = 连 REST 生命周期 Bean 都不建
+  default-index:
+    type: HNSW                   # 留空 = 不覆盖，走 store 内置的 FLAT
+    params:
+      M: 16
+      efConstruction: 200
+```
+
+缓冲池大小、Bloom 容量/假阳率、checkpoint 间隔这些**不在 yml 里**，在 Java 构造器上：
+
+```java
+// 每多少条 WAL 触发一次 snapshot
+VectorStore store = new PersistentVectorStore("/var/lib/z-vector", 1000, true);
+// bloom 期望元素数 / 目标假阳率 / 缓冲池页数
+StorageEngine engine = new StorageEngine("/var/lib/z-vector", wal, 100_000L, 0.01, 256);
 ```
 
 ### Server 配置（k3s）
@@ -353,7 +373,7 @@ spec:
           ports: [{containerPort: 8181}]
           volumeMounts:
             - name: data
-              mountPath: /var/lib/z-vector
+              mountPath: /app/data   # 必须等于镜像里的 ZVECTOR_DATA_DIR，挂到别处等于没持久化
           resources:
             requests: {cpu: 2, memory: 4Gi}
             limits:   {cpu: 8, memory: 16Gi}
@@ -377,9 +397,11 @@ services:
       - "8181:8181"   # gRPC (Milvus 兼容)
       - "8182:8182"   # REST (Qdrant 兼容)
     volumes:
-      - ./data:/var/lib/z-vector
+      - ./data:/app/data          # 对齐镜像里的 ZVECTOR_DATA_DIR=/app/data
     environment:
-      JAVA_OPTS: "-Xms2g -Xmx8g"
+      JVM_OPTS: "-Xms2g -Xmx8g"   # 镜像 ENTRYPOINT 读的是 JVM_OPTS，不是 JAVA_OPTS
+      ZVECTOR_PORT: "6333"
+      ZVECTOR_DATA_DIR: "/app/data"
 
   console:
     image: ghcr.io/z-opc-foundation/z-vector-console:1.0.1
@@ -640,9 +662,9 @@ z-vector-parent (parent, packaging=pom, Java 1.8)
 
 ```xml
 <dependency>
-    <groupId>com.zifang</groupId>
+    <groupId>io.github.yuku123</groupId>
     <artifactId>z-vector-spring-boot-starter</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.1</version>
 </dependency>
 ```
 

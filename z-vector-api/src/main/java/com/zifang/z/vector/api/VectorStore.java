@@ -48,6 +48,20 @@ public interface VectorStore {
     void createCollection(String name, int dimension, DistanceMetric metric,
                           IndexType indexType, Map<String, Object> indexParams);
 
+    /**
+     * 设定 {@link #createCollection(String, int, DistanceMetric)} 那一支在未显式指定索引时
+     * 采用的默认索引。传 {@code null} 表示不覆盖，沿用 store 内置的 {@link IndexType#FLAT}。
+     * <p>
+     * 只影响 3 参那一支：显式给了 {@code indexType} 的调用一律照本宣科。调用面实测（不是推测）：
+     * starter 里的 {@code QdrantRestServer} 与 gRPC 侧建集合走<b>显式</b>那一支，不受本方法影响；
+     * 而独立 server {@code VectorServerApplication} 的 {@code POST /collections} 走的是<b>3 参</b>那一支，
+     * 因此它会吃默认索引 —— 目前 server 自己从不调本方法，默认始终是 null（即 FLAT）。
+     * <p>
+     * 存在意义：装配层此前把 {@code zvector.default-index} 收下后无人读取（探针实测无论配什么，
+     * 建出来的集合都是 FLAT），等于对外广告了一个不生效的开关。
+     */
+    void setDefaultIndex(IndexType indexType, Map<String, Object> indexParams);
+
     /** 获取集合信息（不存在返回 null） */
     VectorCollection getCollection(String name);
 

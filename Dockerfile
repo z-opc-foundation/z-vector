@@ -63,4 +63,7 @@ ENV JVM_OPTS="-Xms512m -Xmx1024m -XX:+UseG1GC"
 ENV ZVECTOR_DATA_DIR="/app/data"
 
 # 启动
-ENTRYPOINT ["sh", "-c", "exec java $JVM_OPTS -jar /app/z-vector-server.jar --z.vector.data-dir=$ZVECTOR_DATA_DIR"]
+# 启动：VectorServerApplication 是裸 main()，旋钮只有环境变量（ZVECTOR_PORT / ZVECTOR_DATA_DIR）。
+# 以前这里挂着 --z.vector.data-dir=$ZVECTOR_DATA_DIR：那个进程不解析任何 --x.y 属性，
+# 值是靠同名环境变量生效的，这半句纯装饰 —— 谁照它在命令行加 --z.vector.port= 就静默无效。
+ENTRYPOINT ["sh", "-c", "exec java $JVM_OPTS -jar /app/z-vector-server.jar"]
