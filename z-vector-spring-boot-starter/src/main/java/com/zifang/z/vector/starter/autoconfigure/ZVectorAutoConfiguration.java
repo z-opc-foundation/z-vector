@@ -73,8 +73,18 @@ public class ZVectorAutoConfiguration {
         return new InMemoryVectorStore();
     }
 
+    /**
+     * REST 服务的开关按 {@code zvector.server.auto-start} 判（默认开），<b>不是</b>按端口判。
+     * <p>
+     * 这里原本写的是 {@code @ConditionalOnProperty(name="port", havingValue="0")} —— 端口配成 0
+     * 才建这个 Bean，而 {@link ZVectorProperties.Server} 的注释和 README 都说 0 是"不启动"、
+     * 6334 才是 REST 端口。两个含义正好相反：按文档配端口的应用一个 REST 端口都拿不到（静默，
+     * 没有任何日志说"没启动"），而配 0 的应用会被塞一个随机端口。同时 {@code autoStart} 这个
+     * 属性全仓没有任何读取方 —— 一条写了却没人认的开关，和被忽略的 Bloom 配置是同一类缺陷。
+     */
     @Bean
-    @ConditionalOnProperty(prefix = "zvector.server", name = "port", havingValue = "0", matchIfMissing = false)
+    @ConditionalOnProperty(prefix = "zvector.server", name = "auto-start",
+            havingValue = "true", matchIfMissing = true)
     public QdrantRestServerLifecycle qdrantRestServerLifecycle(VectorStore store,
                                                                 ZVectorProperties props) {
         return new QdrantRestServerLifecycle(store, props.getServer().getPort());
@@ -84,6 +94,8 @@ public class ZVectorAutoConfiguration {
      * REST 服务生命周期管理 — 启动/关闭钩子。
      */
     public static class QdrantRestServerLifecycle {
+
+        private static final Logger log = LoggerFactory.getLogger(QdrantRestServerLifecycle.class);
 
         private final VectorStore store;
         private final int port;
@@ -96,12 +108,22 @@ public class ZVectorAutoConfiguration {
 
         @PostConstruct
         public void start() {
+            if (port == 0) {
+                // 属性文档里的口径："0 = 不启动"。以前 0 反而是唯一会启动的取值，且起在随机端口上。
+                // 这一层和上面的 @ConditionalOnProperty(auto-start) 是**两条独立的开关**，不是重复：
+                // auto-start 管"要不要这个 Bean"，这里管"端口为 0 时不许 listen"。摘掉任一条，
+                // ZVectorRestAutoConfigurationTest 的 S2 / S3 各红各的（变异 M4/M7 分别验证）。
+                log.info("z-vector REST API disabled (zvector.server.port=0)");
+                return;
+            }
             try {
                 server = new QdrantRestServer(store, port);
                 server.start();
-                log.info("z-vector REST API started on port {}", port);
+                // 报真实端口：port=0 时这是内核挑的那个（QdrantRestServer.getPort() 现在会跟着变），
+                // 否则日志会打出一句"started on port 0"，运维照着 0 去连什么也连不上。
+                log.info("z-vector REST API started on port {}", server.getPort());
             } catch (IOException e) {
-                throw new RuntimeException("Failed to start z-vector REST server", e);
+                throw new RuntimeException("Failed to start z-vector REST server on port " + port, e);
             }
         }
 
@@ -111,6 +133,11 @@ public class ZVectorAutoConfiguration {
                 server.stop();
                 log.info("z-vector REST API stopped");
             }
+        }
+
+        /** 观测：真实监听端口；未启动时返回配置的端口值。 */
+        public int getPort() {
+            return server != null ? server.getPort() : port;
         }
     }
 }

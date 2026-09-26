@@ -41,9 +41,9 @@ public class ZVectorProperties {
     private Server server = new Server();
 
     public static class Server {
-        /** REST 服务端口（0 = 不启动） */
+        /** REST 服务端口（0 = 不启动；要"内核帮我挑一个"请直接用 {@code QdrantRestServer}，装配层只认 0=关） */
         private int port = 6334;
-        /** 是否自动启动 */
+        /** 是否自动启动（关掉就不会创建 REST 生命周期 Bean） */
         private boolean autoStart = true;
 
         public int getPort() { return port; }

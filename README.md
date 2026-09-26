@@ -653,7 +653,8 @@ zvector:
   storage-type: persistent       # in-memory / persistent
   data-dir: /data/zvector
   server:
-    port: 6334                   # REST API 端口
+    port: 6334                   # REST API 端口（0 = 不启动）
+    auto-start: true             # false = 不创建 REST 服务
   default-index:
     type: HNSW
     params:

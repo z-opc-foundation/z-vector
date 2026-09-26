@@ -24,7 +24,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 /**
@@ -74,8 +77,13 @@ public class QdrantRestServer {
 
     private final VectorStore store;
     private final ObjectMapper json = new ObjectMapper();
-    private HttpServer server;
-    private int port;
+    private volatile HttpServer server;
+    /** 请求的端口：0 交给内核挑。start() 之后 {@link #getPort()} 报的是真实端口，不是这个。 */
+    private final int port;
+    /** 内核实际绑上的端口；-1 = 还没起来。 */
+    private volatile int boundPort = -1;
+    /** start() 交出去的工作线程池：stop() 必须关掉它，否则每起停一次就漏 8 条线程。 */
+    private volatile ExecutorService executor;
 
     public QdrantRestServer(int port) {
         this(new com.zifang.z.vector.core.InMemoryVectorStore(), port);
@@ -87,23 +95,51 @@ public class QdrantRestServer {
     }
 
     public void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress(port), 0);
-        server.setExecutor(Executors.newFixedThreadPool(8));
-        server.createContext("/", this::route);
-        server.start();
-        log.info("Qdrant REST API started on port {}", port);
+        HttpServer s = HttpServer.create(new InetSocketAddress(port), 0);
+        // 线程要给名字：stop() 之后"这批线程确实没了"是唯一能观测的关闭证据，没有名字就只能
+        // 在全局线程表里猜哪些是本服务的（HttpServer 的工作线程是按需建的，不起请求根本不存在）。
+        ThreadFactory named = new ThreadFactory() {
+            private final AtomicInteger seq = new AtomicInteger();
+            @Override public Thread newThread(Runnable r) {
+                Thread t = new Thread(r, "z-vector-rest-" + seq.incrementAndGet());
+                t.setDaemon(true);
+                return t;
+            }
+        };
+        ExecutorService ex = Executors.newFixedThreadPool(8, named);
+        s.setExecutor(ex);
+        s.createContext("/", this::route);
+        s.start();
+        this.executor = ex;
+        this.server = s;
+        this.boundPort = s.getAddress().getPort();
+        log.info("Qdrant REST API started on port {}", getPort());
     }
 
     public void stop() {
-        if (server != null) {
-            server.stop(1);
+        HttpServer s = server;
+        server = null;
+        boundPort = -1;
+        ExecutorService ex = executor;
+        executor = null;
+        if (s != null) {
+            s.stop(1);
             log.info("Qdrant REST API stopped");
+        }
+        if (ex != null) {
+            // HttpServer.stop() 不会替关调用方 setExecutor() 交出去的池 —— 不关就是永久泄漏，
+            // 而且池里是非阻塞等待的 worker，JVM 会因此等不到它们（daemon 只是让退出不至于卡死）。
+            ex.shutdownNow();
         }
     }
 
     public VectorStore getStore() { return store; }
 
-    public int getPort() { return port; }
+    /** 真实监听端口（{@code port=0} 时是内核挑的那个）；未启动时退回请求值。 */
+    public int getPort() {
+        int bound = boundPort;
+        return bound >= 0 ? bound : port;
+    }
 
     // ==================== 路由分发 ====================
 
