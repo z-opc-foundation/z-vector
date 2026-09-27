@@ -127,8 +127,12 @@ VERDICT: OK — 8 份装出去的 pom 全部自包含（无 ${revision}/无 <par
 
 ## 5. 等你的四件事（我不会自己拍）
 
-1. **[待点头] 把 §3 那两处改动提交**（`pom.xml` + `PomVersionContractTest.java`，工作树现在就是这两条 `M`）。
-   不 push —— 你先前只授权过 `f265b6e`、`694a6bc` 两次推送，我不当"授权会传染"。
+1. **[待点头] push `2d623f1`**（`pom.xml` + `PomVersionContractTest.java` + 本文，已提交，工作树干净）。
+   你先前只授权过 `f265b6e`、`694a6bc` 两次推送，我不当"授权会传染"。
+   顺带记一笔状态变化（09-26 23:4x 实测 `git merge-base --is-ancestor`）：**§5 写下之后，本机另一会话在
+   20:11 用 `b1eb2ed`「提交工作树现有改动并推送」把它那一侧的改动推上去了，我此前那 14 支未推的
+   提交（`59c14e3`…`f24afcd`）现在都在 `origin/main` 上** —— 不是我推的，也不是我授权的，
+   但事实如此，`git rev-list --count origin/main..HEAD` 现在只剩 `2d623f1` 这 1 支。
 2. **[待决策] 250 上那个容器要不要重建**。09-26 23:3x 实测：`z-vector:v1` 起了 36 小时、
    `curl 127.0.0.1:6333/health` 仍返回 `{"collections":0,"version":"1.0.1","status":"ok"}`
    —— 源码/构件已经 1.0.3，线上还是 1.0.1。**源码修好≠线上修好**。

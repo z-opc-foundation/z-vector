@@ -9,13 +9,16 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -168,11 +171,22 @@ class QdrantRestServerTest {
     }
 
     private Map<String, Object> doHttp(String method, String path, Object body) throws IOException {
+        try {
+            return doHttpOnce(method, path, body);
+        } catch (IOException transport) {
+            // 传输层事故（端口复用后写到上一台 server 的废连接上）重试一次；判据只看真响应。
+            // 成因与 {@code OpenApiSpecRoutingTest.send} 里记的同一条。
+            return doHttpOnce(method, path, body);
+        }
+    }
+
+    private Map<String, Object> doHttpOnce(String method, String path, Object body) throws IOException {
         URL url = new URL("http://localhost:" + TEST_PORT + path);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod(method);
         conn.setConnectTimeout(2000);
         conn.setReadTimeout(2000);
+        conn.setRequestProperty("Connection", "close");
         if (body != null) {
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json");
@@ -188,13 +202,86 @@ class QdrantRestServerTest {
         java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream(1024);
         byte[] buf = new byte[4096];
         int n;
-        while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
+        try {
+            while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
+        } finally {
+            is.close();
+        }
         byte[] bytes = bos.toByteArray();
         conn.disconnect();
         if (bytes.length == 0) return new LinkedHashMap<>();
         @SuppressWarnings("unchecked")
         Map<String, Object> resp = json.readValue(bytes, Map.class);
         return resp == null ? new LinkedHashMap<>() : resp;
+    }
+
+    /**
+     * keep-alive：一条 TCP 连接上连发三个请求，每个都要拿到状态行 + 恰好 Content-Length 那么多字节。
+     * <p>
+     * 这条尺守的是 {@code sendJson} 里那句 {@code sendResponseHeaders(code, bytes.length)}：把长度写成
+     * 0 或 -1，{@code HttpURLConnection} 那类"每次新开连接"的客户端全都察觉不到，而复用连接的客户端
+     * 会把第一个响应体当成第二个响应的开头 —— 客户端拿到的是一堆错位数据，不是错误。
+     */
+    @Test
+    void twoRequestsOnOneKeepAliveConnection() throws Exception {
+        java.net.Socket so = new java.net.Socket("localhost", TEST_PORT);
+        so.setSoTimeout(5000);
+        try {
+            OutputStream os = so.getOutputStream();
+            InputStream is = so.getInputStream();
+            String[] paths = {"/collections", "/collections", "/definitely-not-advertised"};
+            int[] want = {200, 200, 404};
+            for (int i = 0; i < paths.length; i++) {
+                os.write(("GET " + paths[i] + " HTTP/1.1\r\nHost: localhost:" + TEST_PORT
+                        + "\r\nConnection: keep-alive\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+                os.flush();
+                String status = readStatusLine(is);
+                assertTrue(status.startsWith("HTTP/1.1 " + want[i]),
+                        "第 " + (i + 1) + " 个请求（" + paths[i] + "）状态行错位: [" + status + "]");
+                int len = -1;
+                String line;
+                while (!(line = readLine(is)).isEmpty()) {
+                    if (line.toLowerCase(Locale.ROOT).startsWith("content-length:")) {
+                        len = Integer.parseInt(line.split(":", 2)[1].trim());
+                    }
+                }
+                assertTrue(len > 0, "第 " + (i + 1) + " 个响应没带 Content-Length(" + len
+                        + ")，复用连接的客户端无从判断边界");
+                byte[] body = new byte[len];
+                int got = 0;
+                while (got < len) {
+                    int n = is.read(body, got, len - got);
+                    assertTrue(n > 0, "第 " + (i + 1) + " 个响应体读到第 " + got + "/" + len + " 字节就断了");
+                    got += n;
+                }
+                // 边界必须正好在 len 处：多读一个字节就会把下一个响应的头吃掉，下一轮必然错位。
+                assertEquals(len, got, "第 " + (i + 1) + " 个响应体字节数不符");
+            }
+        } finally {
+            so.close();
+        }
+    }
+
+    private static String readStatusLine(InputStream is) throws IOException {
+        String line = readLine(is);
+        assertTrue(line.startsWith("HTTP/1."), "不是 HTTP 响应: [" + line + "]");
+        return line;
+    }
+
+    private static String readLine(InputStream is) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream(96);
+        int c;
+        while ((c = is.read()) >= 0) {
+            if (c == '\r') {
+                int n = is.read();
+                if (n == '\n') break;
+                bos.write(c);
+                if (n >= 0) bos.write(n);
+            } else {
+                bos.write(c);
+            }
+        }
+        return new String(bos.toByteArray(), StandardCharsets.UTF_8).trim();
     }
 
     private Map<String, Object> pointJson(String id, float[] vector, Map<String, Object> payload) {

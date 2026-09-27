@@ -89,5 +89,13 @@
             <version>5.10.2</version>
             <scope>test</scope>
         </dependency>
+
+        <!-- 只在测试里用：OpenApiSpecRoutingTest 拿这台 server 的真实路由去核对外广告的
+             path/method 清单。生产依赖面保持干净（protocol 模块谁也不引）。 -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-vector-protocol</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

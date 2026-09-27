@@ -58,8 +58,44 @@ docker run -d --name z-vector -p 6333:6333 ghcr.io/z-opc-foundation/z-vector:1.0
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `ZVECTOR_PORT` | `6333` | REST 监听端口 |
+| `ZVECTOR_PORT` | `6333` | REST 监听端口（`0` = 让内核挑一个空闲端口） |
 | `ZVECTOR_DATA_DIR` | `/data/zvector` | 数据目录（WAL + Snapshot） |
+| `ZVECTOR_DEFAULT_INDEX` | 空 | 不带 `index_type` 的建集合请求用哪个索引：`FLAT` / `HNSW` / `IVF`，大小写不敏感；空串 = 不覆盖，走内置 `FLAT` |
+| `ZVECTOR_INDEX_PARAMS` | 空 | 上面那个索引的参数，一个 JSON 对象，例如 `{"M":16,"ef_construction":200}`（键与下面的 `index_params` 同形） |
+
+**拼错不降级**：`ZVECTOR_DEFAULT_INDEX=SPARSE` 或 `ZVECTOR_INDEX_PARAMS='M=7'` 会让进程启动即失败，
+日志里点名是哪一个变量 —— 一台把索引名拼错却悄悄跑成 FLAT 的容器，比它不起来更难查。
+
+镜像：这一份 README 上面那条 `ghcr.io/...` 是外部镜像，本机无法验证它在不在（匿名拉 manifest
+一律 403，分不清"私有"和"没有"）。**本地可复现的构建路径是 `z-vector-server/Dockerfile`**，它只需要
+一个已经打好的 fat jar：
+
+```bash
+mvn -pl z-vector-server -am clean package -DskipTests     # 少 -am 会静默拿线上旧构件编
+docker build -f z-vector-server/Dockerfile -t z-vector:local z-vector-server
+docker run -d -p 6333:6333 -e ZVECTOR_DEFAULT_INDEX=HNSW \
+    -e ZVECTOR_INDEX_PARAMS='{"M":16,"ef_construction":200}' z-vector:local
+```
+
+（仓根那份多阶段 `Dockerfile` 目前在干净机器上构建不出来，两条实测原因写在文件开头的注释里。）
+
+REST 建集合的 body 支持这些字段：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `name` | 是 | 集合名 |
+| `dimensions` | 是 | 正整数（`4` 与 `4.0` 都收） |
+| `metric` | 否 | `COSINE`（默认）/ `L2` / `IP` / `HAMMING` |
+| `index_type` | 否 | `FLAT` / `HNSW` / `IVF`；**不写才吃 `ZVECTOR_DEFAULT_INDEX`** |
+| `index_params` | 否 | 一个 JSON 对象；跟着集合一起落 WAL，重启后仍然在 |
+
+响应会把**真正建出来的** `index_type` / `index_params` 回读给你（不是回吐请求里的值）：
+
+```bash
+curl -s -X PUT localhost:6333/collections -d \
+  '{"name":"products","dimensions":4,"metric":"L2","index_type":"HNSW","index_params":{"M":7}}'
+# {"status":"ok","collection":"products","dimensions":4,"metric":"L2","index_type":"HNSW","index_params":{"M":7}}
+```
 
 应用侧要么用**嵌入式** starter（方式一 + 下面的 `zvector.*` 配置），要么按<b>方式三</b>用社区
 Qdrant/Milvus 客户端打 REST/协议接口。starter **没有** "连远端 server" 的客户端模式，

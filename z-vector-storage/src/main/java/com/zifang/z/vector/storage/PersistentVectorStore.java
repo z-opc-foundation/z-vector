@@ -292,7 +292,7 @@ public class PersistentVectorStore implements VectorStore {
             throw new VectorException("Collection already exists: " + name);
         }
         try {
-            walAppend(WalRecord.createCollection(name, dimension, metric, indexType));
+            walAppend(WalRecord.createCollection(name, dimension, metric, indexType, indexParams));
             Collection coll = new Collection(new VectorCollection(name, dimension, metric,
                     indexType, indexParams));
             collections.put(name, coll);

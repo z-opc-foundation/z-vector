@@ -27,7 +27,7 @@ import java.util.Map;
  * List<SearchResult> hits = store.search("docs", query, 10, Filter.eq("lang", "zh"));
  * }</pre>
  */
-public interface VectorStore {
+public interface VectorStore extends AutoCloseable {
 
     // ==================== Collection 管理 ====================
 
@@ -143,7 +143,17 @@ public interface VectorStore {
     /** 刷盘（将 WAL 中未持久化的数据写入磁盘） */
     void flush(String collectionName);
 
-    /** 关闭 store（释放所有资源，包括 WAL、mmap、线程池） */
+    /**
+     * 关闭 store（释放所有资源，包括 WAL、mmap、线程池）。
+     * <p>
+     * 本接口因此 {@code extends AutoCloseable}：两个实现（内存 / 持久化）早就各自有
+     * {@code public void close()} 且不抛受检异常，而接口自己不声明 close 之外的一切 ——
+     * 结果 {@code store instanceof AutoCloseable} 对<b>两个实现都是 false</b>，
+     * 独立 server 的 shutdown hook 就是那样写的（注释说"不关就丢 WAL 尾部"，实际一次都没关过）。
+     * 另外 {@code PersistentVectorStore} 的 javadoc 用法示例写的就是
+     * {@code try (VectorStore store = new PersistentVectorStore(dir))} —— 那句话在改前根本编不过。
+     */
+    @Override
     void close();
 
     /** store 是否已关闭 */

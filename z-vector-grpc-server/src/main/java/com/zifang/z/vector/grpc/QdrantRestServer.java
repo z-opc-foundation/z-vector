@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -218,6 +219,11 @@ public class QdrantRestServer {
             sendError(exchange, 404, "Not found: " + method + " " + path);
         } catch (VectorException e) {
             sendError(exchange, 400, e.getMessage());
+        } catch (IllegalArgumentException e) {
+            // 请求体写错（metric/index_type/dimension 的取值或类型）是客户端的锅，不是服务端的 500。
+            // 独立 server 那一侧的 dispatch 早就是这个映射了；两边不一致时，照 OpenApiSpec
+            // 广告的两个 400 分支生成的客户端会在这一台上收到 500。
+            sendError(exchange, 400, e.getMessage());
         } catch (Exception e) {
             log.error("Request failed: {} {}", method, path, e);
             sendError(exchange, 500, "Internal error: " + e.getMessage());
@@ -228,15 +234,102 @@ public class QdrantRestServer {
 
     private void handleCreateCollection(HttpExchange exchange, String name) throws IOException {
         Map<String, Object> body = parseJson(exchange);
-        int dimension = ((Number) body.getOrDefault("dimension", 128)).intValue();
-        String metricStr = (String) body.getOrDefault("metric", "COSINE");
-        DistanceMetric metric = DistanceMetric.valueOf(metricStr.toUpperCase());
-        String indexTypeStr = (String) body.getOrDefault("index_type", "FLAT");
-        IndexType indexType = IndexType.valueOf(indexTypeStr.toUpperCase());
-        @SuppressWarnings("unchecked")
-        Map<String, Object> indexParams = (Map<String, Object>) body.get("index_params");
-        store.createCollection(name, dimension, metric, indexType, indexParams);
-        sendJson(exchange, 200, mapOf("status", "ok", "name", name));
+        int dimension = asInt(body.get("dimension"), 128, "dimension");
+        DistanceMetric metric = parseMetric(body.get("metric"));
+        Map<String, Object> indexParams = asParamsMap(body.get("index_params"), "index_params");
+        // 缺省时不能填个 "FLAT" 再走 5 参 —— 那等于当着客户端的面把进程配好的默认索引顶掉。
+        // 而 starter 那条路恰好就是这么死的：zvector.default-index → store.setDefaultIndex →
+        // 同一个 store 交给这台 server，但客户端不写 index_type 时这里传的是显式 FLAT ⇒
+        // 配了 HNSW 也永远建出 FLAT，且响应只有 status/name，谁都看不见这次降级。
+        Object rawIndexType = body.get("index_type");
+        if (rawIndexType == null) {
+            store.createCollection(name, dimension, metric);
+        } else {
+            store.createCollection(name, dimension, metric,
+                    parseIndexType(rawIndexType, "index_type"), indexParams);
+        }
+        // 回读 store 里真正建出来的那个，不回吐客户端传进来的（理由同独立 server 那一侧）。
+        VectorCollection created = store.getCollection(name);
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("status", "ok");
+        resp.put("name", name);
+        resp.put("dimension", created.getDimension());
+        resp.put("metric", created.getMetric().name());
+        resp.put("index_type", created.getIndexType().name());
+        resp.put("index_params", created.getConfig());
+        sendJson(exchange, 200, resp);
+    }
+
+    /**
+     * 请求体里的 {@code metric}：允许缺省（COSINE），大小写不敏感，写错必须是 400 而不是
+     * "No enum constant" 的 500 —— OpenApiSpec 给 createCollection 广告的就是 '400' Bad request。
+     */
+    private static DistanceMetric parseMetric(Object v) {
+        if (v == null) return DistanceMetric.COSINE;
+        if (!(v instanceof String)) {
+            throw new IllegalArgumentException("metric must be a string, got: "
+                    + v.getClass().getSimpleName());
+        }
+        String raw = (String) v;
+        try {
+            return DistanceMetric.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("metric is not a known distance metric: \"" + raw
+                    + "\" (expected one of " + names(DistanceMetric.values()) + ")");
+        }
+    }
+
+    /** 写错的索引类型必须带得上"那什么算对" —— 支持的取值直接从枚举取，不再抄一份字面量。 */
+    private static IndexType parseIndexType(Object v, String where) {
+        if (!(v instanceof String)) {
+            throw new IllegalArgumentException(where + " must be a string, got: "
+                    + (v == null ? "null" : v.getClass().getSimpleName()));
+        }
+        String raw = (String) v;
+        try {
+            return IndexType.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(where + " is not a known index type: \"" + raw
+                    + "\" (expected one of " + names(IndexType.values()) + ")");
+        }
+    }
+
+    private static String names(Enum<?>[] values) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < values.length; i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(values[i].name());
+        }
+        return sb.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asParamsMap(Object v, String where) {
+        if (v == null) return null;
+        if (!(v instanceof Map)) {
+            throw new IllegalArgumentException(where + " must be a JSON object, got: "
+                    + (v instanceof List ? "array" : v.getClass().getSimpleName()));
+        }
+        return new LinkedHashMap<>((Map<String, Object>) v);
+    }
+
+    /** Jackson 会把 JSON 数字解成 Integer 或 Double，而 `(Number) "768"` 是 ClassCastException ⇒ 500。 */
+    private static int asInt(Object v, int defaultValue, String where) {
+        if (v == null) return defaultValue;
+        int parsed;
+        if (v instanceof Number) {
+            parsed = ((Number) v).intValue();
+        } else {
+            try {
+                parsed = Integer.parseInt(v.toString().trim());
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(where + " must be a positive integer, got: " + v);
+            }
+        }
+        if (parsed <= 0) {
+            throw new IllegalArgumentException(where + " must be a positive integer, got: " + v);
+        }
+        return parsed;
     }
 
     private void handleGetCollection(HttpExchange exchange, String name) throws IOException {
@@ -250,6 +343,9 @@ public class QdrantRestServer {
         resp.put("dimension", c.getDimension());
         resp.put("metric", c.getMetric().name());
         resp.put("index_type", c.getIndexType().name());
+        // 索引参数也要能读回来：创建响应现在回读了，GET 这一路却只回类型，
+        // 于是"M=16 到底进没进去"仍然只能靠再建一次集合去猜。
+        resp.put("index_params", c.getConfig());
         resp.put("points_count", store.getPointCount(name));
         resp.put("indexed", store.isIndexed(name));
         sendJson(exchange, 200, resp);
@@ -337,7 +433,7 @@ public class QdrantRestServer {
         if (Boolean.TRUE.equals(buildIndex) && !store.isIndexed(name)) {
             store.buildIndex(name);
         }
-        // 过滤：当前 REST API 仅支持简单 eq {"field": "lang", "eq": "zh"}
+        // 过滤：形状与错误语义见 parseFilter —— 解析不出来必须 400，不能把"没筛过"当结果发出去。
         Filter filter = parseFilter(body.get("filter"));
 
         List<SearchResult> results = store.search(name, queryVector, topK, filter);
@@ -359,53 +455,151 @@ public class QdrantRestServer {
     }
 
     /**
-     * 简单 Filter 解析 — 支持 {"field": value} 单层等值匹配 + {"field": {"op": value}}
+     * Filter 解析 —— 认得的形状全部落到 {@link Filter} 的真实语义，认不出的报 400 并点名是哪一层。
+     * <p>
+     * 改前最坏的地方不是"少支持了 Qdrant 的 {@code must/should/must_not}"，而是<b>它不报错</b>：
+     * <ul>
+     *   <li>{@code {"must":[…]}} 只有一个 key，会先落进"单字段等值"那一支，变成
+     *       {@code Filter.eq("must", 那个数组)}。payload 里没有叫 must 的字段 ⇒ "筛一下"的回复是
+     *       一个合法的空结果集，客户端无从知道自己写错了。</li>
+     *   <li>文档自己广告过的 {@code {"and":[…]}} / {@code {"or":[…]}} 同理（{@code size()==1} 那一支
+     *       在复合处理前面，复合那两段根本到不了）⇒ 恒零命中。</li>
+     *   <li>操作符写错走 {@code default: return null} ⇒ 整条 filter 被丢掉，返回的是<b>没筛过</b>的结果，
+     *       比零命中更糟。</li>
+     *   <li>多个 key 的对象（{@code {"lang":"zh","score":{"gte":0.5}}}）落到末尾的 {@code return null}，
+     *       同样静默不筛。</li>
+     *   <li>{@code {"score":{"gte":0.2,"lte":0.6}}} 只取第一项（迭代序），lte 被悄悄扔掉。</li>
+     *   <li>{@code {"score":{"gt":"abc"}}} 是 {@code (Number) val} 的 ClassCastException ⇒ 500。</li>
+     * </ul>
+     * 现在这六种写法要么真在服务，要么 400 —— "筛了但没生效"这条路上不再有任何一种写法。
      */
-    @SuppressWarnings("unchecked")
     private Filter parseFilter(Object filterObj) {
-        if (filterObj == null) return null;
-        if (!(filterObj instanceof Map)) return null;
-        Map<String, Object> m = (Map<String, Object>) filterObj;
-        // 单字段等值: {"lang": "zh"}
-        if (m.size() == 1) {
-            Map.Entry<String, Object> e = m.entrySet().iterator().next();
-            Object v = e.getValue();
-            if (!(v instanceof Map)) {
-                return Filter.eq(e.getKey(), v);
-            }
-            // {"lang": {"eq": "zh"}}
-            Map<String, Object> opSpec = (Map<String, Object>) v;
-            Map.Entry<String, Object> opEntry = opSpec.entrySet().iterator().next();
-            String op = opEntry.getKey();
-            Object val = opEntry.getValue();
-            switch (op) {
-                case "eq":    return Filter.eq(e.getKey(), val);
-                case "ne":    return Filter.ne(e.getKey(), val);
-                case "gt":    return Filter.gt(e.getKey(), (Number) val);
-                case "gte":   return Filter.gte(e.getKey(), (Number) val);
-                case "lt":    return Filter.lt(e.getKey(), (Number) val);
-                case "lte":   return Filter.lte(e.getKey(), (Number) val);
-                case "in":    return Filter.inValues(e.getKey(), (List<Object>) val);
-                case "nin":   return Filter.notIn(e.getKey(), (List<Object>) val);
-                case "exists":return Filter.exists(e.getKey());
-                default:      return null;
-            }
-        }
-        // AND 复合: {"and": [{"lang":"zh"}, {"score":0.5}]}
-        if (m.containsKey("and")) {
-            List<Object> children = (List<Object>) m.get("and");
-            Filter[] arr = new Filter[children.size()];
-            for (int i = 0; i < children.size(); i++) arr[i] = parseFilter(children.get(i));
-            return Filter.and(arr);
-        }
-        if (m.containsKey("or")) {
-            List<Object> children = (List<Object>) m.get("or");
-            Filter[] arr = new Filter[children.size()];
-            for (int i = 0; i < children.size(); i++) arr[i] = parseFilter(children.get(i));
-            return Filter.or(arr);
-        }
-        return null;
+        return parseFilter(filterObj, "filter");
     }
+
+    private Filter parseFilter(Object filterObj, String where) {
+        if (filterObj == null) return null;
+        if (!(filterObj instanceof Map)) {
+            throw new IllegalArgumentException(where + " must be a JSON object, got: " + kindOf(filterObj));
+        }
+        Map<?, ?> m = (Map<?, ?>) filterObj;
+        List<Filter> parts = new ArrayList<Filter>();
+        for (Map.Entry<?, ?> e : m.entrySet()) {
+            String key = String.valueOf(e.getKey());
+            String here = where + "." + key;
+            if (COMBINATORS.contains(key)) {
+                Filter combinator = parseCombinator(key, e.getValue(), here);
+                if (combinator != null) parts.add(combinator);
+            } else {
+                parts.add(parseCondition(key, e.getValue(), here));
+            }
+        }
+        if (parts.isEmpty()) return null;          // {} —— 一个条件也没有，等价于不筛
+        if (parts.size() == 1) return parts.get(0);
+        return Filter.and(parts.toArray(new Filter[parts.size()]));
+    }
+
+    /**
+     * {@code and/must} → AND，{@code or/should} → OR，{@code must_not} → 每项取反后 AND，
+     * {@code not} → 收一个条件对象取反。空数组/空对象返回 {@code null}（不施加限制），
+     * 因为 {@code Filter.or()} 的空children编码是"恒假"，直接交给它会变成零命中。
+     */
+    private Filter parseCombinator(String key, Object raw, String where) {
+        if ("not".equals(key)) {
+            if (!(raw instanceof Map)) {
+                throw new IllegalArgumentException(where + " must be a JSON object, got: " + kindOf(raw));
+            }
+            Filter one = parseFilter(raw, where);
+            return one == null ? null : one.not();
+        }
+        if (!(raw instanceof List)) {
+            throw new IllegalArgumentException(where + " must be a JSON array, got: " + kindOf(raw));
+        }
+        List<?> items = (List<?>) raw;
+        List<Filter> children = new ArrayList<Filter>(items.size());
+        for (int i = 0; i < items.size(); i++) {
+            Filter child = parseFilter(items.get(i), where + "[" + i + "]");
+            if (child != null) children.add(child);
+        }
+        if (children.isEmpty()) return null;
+        Filter[] arr = children.toArray(new Filter[children.size()]);
+        if ("or".equals(key) || "should".equals(key)) return Filter.or(arr);
+        if ("must_not".equals(key)) {
+            Filter[] negated = new Filter[arr.length];
+            for (int i = 0; i < arr.length; i++) negated[i] = arr[i].not();
+            return Filter.and(negated);
+        }
+        return Filter.and(arr);                     // and / must
+    }
+
+    /** {@code {"lang":"zh"}} 是等值；{@code {"lang":{…}}} 里的每个操作符都要真生效。 */
+    private Filter parseCondition(String field, Object value, String where) {
+        if (!(value instanceof Map)) return Filter.eq(field, value);
+        Map<?, ?> spec = (Map<?, ?>) value;
+        if (spec.isEmpty()) {
+            throw new IllegalArgumentException(where + " 的操作符对象是空的，形如 {\"" + field
+                    + "\":{\"eq\":\"zh\"}}");
+        }
+        List<Filter> parts = new ArrayList<Filter>(spec.size());
+        for (Map.Entry<?, ?> opEntry : spec.entrySet()) {
+            String op = String.valueOf(opEntry.getKey());
+            parts.add(parseOperator(field, op, opEntry.getValue(), where + "." + op));
+        }
+        if (parts.size() == 1) return parts.get(0);
+        return Filter.and(parts.toArray(new Filter[parts.size()]));  // {"score":{"gte":0.2,"lte":0.6}}
+    }
+
+    @SuppressWarnings("unchecked")
+    private Filter parseOperator(String field, String op, Object val, String where) {
+        if ("eq".equals(op)) return Filter.eq(field, val);
+        if ("ne".equals(op)) return Filter.ne(field, val);
+        if ("exists".equals(op)) {
+            // {"exists": false} 是"这个字段不存在"，不能当 true 处理。
+            if (val instanceof Boolean && !((Boolean) val)) return Filter.exists(field).not();
+            return Filter.exists(field);
+        }
+        if ("contains".equals(op)) {
+            require(val instanceof String, where + " expects a string, got: " + kindOf(val));
+            return Filter.contains(field, (String) val);
+        }
+        if ("in".equals(op) || "nin".equals(op)) {
+            require(val instanceof List, where + " expects a JSON array, got: " + kindOf(val));
+            List<Object> values = (List<Object>) val;
+            return "in".equals(op) ? Filter.inValues(field, values) : Filter.notIn(field, values);
+        }
+        if ("gt".equals(op) || "gte".equals(op) || "lt".equals(op) || "lte".equals(op)) {
+            require(val instanceof Number, where + " expects a number, got: " + kindOf(val));
+            Number n = (Number) val;
+            if ("gt".equals(op)) return Filter.gt(field, n);
+            if ("gte".equals(op)) return Filter.gte(field, n);
+            if ("lt".equals(op)) return Filter.lt(field, n);
+            return Filter.lte(field, n);
+        }
+        throw new IllegalArgumentException("filter operator \"" + op + "\" is not supported for field \""
+                + field + "\" (expected one of " + OPERATORS + ")");
+    }
+
+    private static void require(boolean condition, String message) {
+        if (!condition) throw new IllegalArgumentException(message);
+    }
+
+    /** 报错里要说清"这东西是什么"，而 Java 的类名对写 JSON 的人没有意义。 */
+    private static String kindOf(Object v) {
+        if (v == null) return "null";
+        if (v instanceof Map) return "object";
+        if (v instanceof List) return "array";
+        if (v instanceof String) return "string";
+        if (v instanceof Number) return "number";
+        if (v instanceof Boolean) return "boolean";
+        return v.getClass().getSimpleName();
+    }
+
+    private static final java.util.Set<String> COMBINATORS =
+            new java.util.HashSet<String>(java.util.Arrays.asList(
+                    "and", "or", "must", "should", "must_not", "not"));
+
+    private static final String OPERATORS =
+            "eq, ne, gt, gte, lt, lte, in, nin, exists, contains";
 
     // ==================== 工具方法 ====================
 

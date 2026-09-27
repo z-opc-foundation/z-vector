@@ -60,11 +60,26 @@ public class WalRecord {
 
     // ================= =  便捷构造方法  =================
 
+    /**
+     * CREATE_COLLECTION 的 WAL 记录。
+     * <p>
+     * {@code indexParams} 必须进 payload：重放侧的 {@code applyCreateCollection} 一直在读
+     * {@code index_params} 这个键，而写侧从来没写过 ⇒ 显式带参建的集合一重启参数就没了
+     * （写进去时 {@code getConfig()} 有 {@code M=7}，重放后是空 map）。
+     * <p>
+     * 字符串一律经 {@link #jsonString}：此前是 {@code String.format} 把 name 直接拼进 JSON，
+     * 集合名里带一个 {@code "} 就写出一条结构上非法的 payload —— 记录的 CRC 是**对的**，
+     * 所以重放时炸在 parseJson，而不是被当成损坏记录跳过，整库启不来。
+     */
     public static WalRecord createCollection(String name, int dimension,
-                                            DistanceMetric metric, IndexType indexType) {
-        String payload = String.format(
-                "{\"name\":\"%s\",\"dimension\":%d,\"metric\":\"%s\",\"index_type\":\"%s\"}",
-                name, dimension, metric.name(), indexType.name());
+                                            DistanceMetric metric, IndexType indexType,
+                                            java.util.Map<String, Object> indexParams) {
+        String payload = "{\"name\":" + jsonString(name)
+                + ",\"dimension\":" + dimension
+                + ",\"metric\":" + jsonString(metric.name())
+                + ",\"index_type\":" + jsonString(indexType.name())
+                + ",\"index_params\":" + jsonMap(indexParams)
+                + "}";
         return new WalRecord(WalOpType.CREATE_COLLECTION, name, payload);
     }
 
@@ -73,8 +88,8 @@ public class WalRecord {
     }
 
     public static WalRecord upsertPoint(String collection, VectorPoint point) {
-        StringBuilder sb = new StringBuilder("{\"id\":\"").append(point.getId())
-                .append("\",\"vector\":[");
+        StringBuilder sb = new StringBuilder("{\"id\":").append(jsonString(point.getId()))
+                .append(",\"vector\":[");
         float[] v = point.getVector();
         for (int i = 0; i < v.length; i++) {
             if (i > 0) sb.append(",");
@@ -88,7 +103,7 @@ public class WalRecord {
 
     public static WalRecord deletePoint(String collection, String id) {
         return new WalRecord(WalOpType.DELETE_POINT, collection,
-                "{\"id\":\"" + id + "\"}");
+                "{\"id\":" + jsonString(id) + "}");
     }
 
     public static WalRecord checkpoint(long sequenceNumber) {
@@ -96,20 +111,73 @@ public class WalRecord {
                 "{\"seq\":" + sequenceNumber + "}");
     }
 
+    /**
+     * 带引号的 JSON 字符串字面量：转义 {@code "}{@code \} 和控制字符，其余按 UTF-8 原样写。
+     * null 写成 {@code null}（不是 {@code "null"}），让读侧拿到的是缺字段而不是一个叫
+     * {@code "null"} 的 id。
+     */
+    static String jsonString(String s) {
+        if (s == null) return "null";
+        StringBuilder sb = new StringBuilder(s.length() + 2);
+        sb.append('"');
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '"') sb.append("\\\"");
+            else if (c == '\\') sb.append("\\\\");
+            else if (c == '\n') sb.append("\\n");
+            else if (c == '\r') sb.append("\\r");
+            else if (c == '\t') sb.append("\\t");
+            else if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
+            else sb.append(c);
+        }
+        sb.append('"');
+        return sb.toString();
+    }
+
+    /**
+     * payload 的 JSON 编码。递归：此前非 Number/Boolean 的值一律被写成 {@code "toString()"}，
+     * 于是嵌套 map（REST 侧完全允许 {@code {"filter":{"range":{"gt":3}}}} 这种形状）被写成
+     * {@code "{a={b=1}}"} —— 不是合法 JSON，同样是 CRC 正确而重放即炸。
+     */
     private static String jsonMap(java.util.Map<String, Object> map) {
         if (map == null || map.isEmpty()) return "{}";
         StringBuilder sb = new StringBuilder("{");
         boolean first = true;
         for (java.util.Map.Entry<String, Object> e : map.entrySet()) {
             if (!first) sb.append(",");
-            sb.append("\"").append(e.getKey()).append("\":");
-            Object v = e.getValue();
-            if (v instanceof Number) sb.append(v);
-            else if (v instanceof Boolean) sb.append(v);
-            else sb.append("\"").append(v).append("\"");
+            sb.append(jsonString(e.getKey())).append(":");
+            appendJsonValue(sb, e.getValue());
             first = false;
         }
         sb.append("}");
         return sb.toString();
+    }
+
+    /** 单个值的 JSON 编码：数字/布尔原样，字符串转义，Map/List 递归，其余按字符串处理。 */
+    private static StringBuilder appendJsonValue(StringBuilder sb, Object v) {
+        if (v == null) return sb.append("null");
+        if (v instanceof Number || v instanceof Boolean) return sb.append(v);
+        if (v instanceof java.util.Map) {
+            sb.append('{');
+            boolean first = true;
+            for (java.util.Map.Entry<?, ?> e : ((java.util.Map<?, ?>) v).entrySet()) {
+                if (!first) sb.append(",");
+                sb.append(jsonString(String.valueOf(e.getKey()))).append(":");
+                appendJsonValue(sb, e.getValue());
+                first = false;
+            }
+            return sb.append('}');
+        }
+        if (v instanceof java.util.Collection) {
+            sb.append('[');
+            boolean first = true;
+            for (Object o : (java.util.Collection<?>) v) {
+                if (!first) sb.append(",");
+                appendJsonValue(sb, o);
+                first = false;
+            }
+            return sb.append(']');
+        }
+        return sb.append(jsonString(v.toString()));
     }
 }

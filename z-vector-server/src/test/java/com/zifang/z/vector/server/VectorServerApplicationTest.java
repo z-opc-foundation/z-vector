@@ -80,7 +80,41 @@ class VectorServerApplicationTest {
             is.close();
         }
         c.disconnect();
-        return new Resp(status, bos.toByteArray());
+        byte[] respBody = bos.toByteArray();
+        if (status >= 400) {
+            // 偶发红的自助取证（不改变判定）：这台机器上有别的会话的常驻 HTTP 服务，
+            // 曾出现过一次"请求拿到 {\"ok\":false,\"error\":\"not found: /collections\"}"——
+            // 那句文案 z-vector 自己产生不了（本机只有 z-bot / z-agent 的 HttpChannel 会这么写），
+            // 所以当场把这个端口自称是谁、以及同端口 GET /health 的真实回答一起打出来：
+            // /health 正常 ⇒ 端口是我们的，404 是真路由问题；/health 也离谱 ⇒ 跨进程串话。
+            System.err.println("[FLAKE-EVIDENCE] " + method + " " + base + path
+                    + " -> " + status + " body=" + new String(respBody, StandardCharsets.UTF_8)
+                    + " | same-port /health -> " + probeHealthOnSamePort());
+        }
+        return new Resp(status, respBody);
+    }
+
+    private String probeHealthOnSamePort() {
+        try {
+            HttpURLConnection p = (HttpURLConnection) new URL(base + "/health").openConnection();
+            p.setRequestMethod("GET");
+            p.setConnectTimeout(2000);
+            p.setReadTimeout(2000);
+            p.setRequestProperty("Connection", "close");
+            int code = p.getResponseCode();
+            InputStream in = code >= 400 ? p.getErrorStream() : p.getInputStream();
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            if (in != null) {
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                in.close();
+            }
+            p.disconnect();
+            return code + " " + new String(out.toByteArray(), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return "probe failed: " + e;
+        }
     }
 
     // ==================== /health ====================

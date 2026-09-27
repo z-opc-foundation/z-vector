@@ -46,7 +46,7 @@ class WalFileTest {
 
     @Test
     void appendAndRead() throws IOException {
-        wal.append(WalRecord.createCollection("docs", 768, DistanceMetric.COSINE, IndexType.HNSW));
+        wal.append(WalRecord.createCollection("docs", 768, DistanceMetric.COSINE, IndexType.HNSW, null));
         wal.append(WalRecord.upsertPoint("docs",
                 new VectorPoint("d1", new float[]{1, 2, 3}, map("lang", "zh"))));
 
@@ -68,8 +68,9 @@ class WalFileTest {
 
     @Test
     void truncate() throws IOException {
-        wal.append(WalRecord.createCollection("a", 3, DistanceMetric.L2, IndexType.FLAT));
-        wal.append(WalRecord.createCollection("b", 3, DistanceMetric.L2, IndexType.FLAT));
+        wal.append(WalRecord.createCollection("a", 3, DistanceMetric.L2, IndexType.FLAT, null));
+        wal.append(WalRecord.createCollection("b", 3, DistanceMetric.L2, IndexType.FLAT,
+                map("M", 7)));
         assertEquals(2L, wal.getSequenceNumber());
 
         wal.truncate();
@@ -79,7 +80,7 @@ class WalFileTest {
 
     @Test
     void reopenAndReplay() throws IOException {
-        wal.append(WalRecord.createCollection("docs", 768, DistanceMetric.COSINE, IndexType.HNSW));
+        wal.append(WalRecord.createCollection("docs", 768, DistanceMetric.COSINE, IndexType.HNSW, null));
         wal.append(WalRecord.upsertPoint("docs",
                 new VectorPoint("d1", new float[]{1, 2, 3}, map("lang", "zh"))));
         wal.close();

@@ -47,27 +47,140 @@ public class VectorServerApplication {
     private static VectorStore vectorStore;
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
+    /** {@code ZVECTOR_PORT} 缺省值。0 表示让内核自己挑端口（测试就用它）。 */
+    static final int DEFAULT_PORT = 6333;
+    static final String DEFAULT_DATA_DIR = "/data/zvector";
+
     public static void main(String[] args) throws Exception {
-        int port = Integer.parseInt(System.getenv().getOrDefault("ZVECTOR_PORT", "6333"));
-        String dataDir = System.getenv().getOrDefault("ZVECTOR_DATA_DIR", "/data/zvector");
+        boot(System.getenv());
+    }
+
+    /** 一次装配的产物：起住的 server、内核真正分到的端口、以及被装配好的 store。 */
+    static final class Boot {
+        final HttpServer server;
+        final VectorStore store;
+        final int port;
+
+        Boot(HttpServer server, VectorStore store, int port) {
+            this.server = server;
+            this.store = store;
+            this.port = port;
+        }
+    }
+
+    /**
+     * 装配：读环境 → 建 store → 落默认索引 → 起 HTTP → 挂 shutdown hook。{@code main} 走这一条，
+     * 测试走的也是这一条（{@code ZVECTOR_PORT=0} 让内核分端口，{@code ZVECTOR_DATA_DIR} 指到临时目录）。
+     * <p>
+     * 之所以把它从 {@code main} 里抽出来：这几步长在 main 里时，任何测试调 main 都会
+     * 占死 6333、往 {@code /data/zvector} 写、再注册一个 shutdown hook —— 于是"env 里配的默认索引
+     * 到底有没有落到 store 上"这一问结构上无人能答，而 #18 刚为同样的形状记过一笔账。
+     * <p>
+     * 配置读错一律<b>启动即失败</b>，不做静默兜底：一台把 {@code ZVECTOR_DEFAULT_INDEX} 拼错的容器，
+     * 悄悄跑成 FLAT 比它不起来更糟（实测：改前压根没有这个旋钮，无论怎么配都是 FLAT）。
+     */
+    static Boot boot(Map<String, String> env) throws IOException {
+        String portRaw = valueOr(env.get("ZVECTOR_PORT"), String.valueOf(DEFAULT_PORT));
+        int port;
+        try {
+            port = Integer.parseInt(portRaw.trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("ZVECTOR_PORT is not an integer: \"" + portRaw + "\"");
+        }
+        if (port < 0 || port > 65535) {
+            // 0 是合法值（内核自己挑一个空闲端口），负数与越界不是：绑到 -1 上
+            // 拿到的是 IllegalArgumentException 从 bind 里冒出来，报的是"port out of range:-1"，
+            // 不说是哪个配置坏了 —— 而 ops 手里只有这个 env 变量。
+            throw new IllegalArgumentException("ZVECTOR_PORT is out of range (0-65535): " + port);
+        }
+        String dataDir = valueOr(env.get("ZVECTOR_DATA_DIR"), DEFAULT_DATA_DIR);
+
+        String indexRaw = valueOr(env.get("ZVECTOR_DEFAULT_INDEX"), "").trim();
+        IndexType defaultIndex = indexRaw.isEmpty() ? null : parseIndexType(indexRaw, "ZVECTOR_DEFAULT_INDEX");
+        Map<String, Object> defaultParams = parseIndexParams(
+                valueOr(env.get("ZVECTOR_INDEX_PARAMS"), "").trim());
 
         System.out.println("Starting z-vector server...");
         System.out.println("Port: " + port);
         System.out.println("Data directory: " + dataDir);
+        System.out.println("Default index for 3-arg createCollection: "
+                + (defaultIndex == null ? "unset (FLAT)" : defaultIndex + " " + defaultParams));
 
-        // 初始化向量存储
-        HttpServer server = start(port, VectorStoreFactory.persistent(dataDir));
+        VectorStore store = VectorStoreFactory.persistent(dataDir);
+        store.setDefaultIndex(defaultIndex, defaultParams);
+
+        HttpServer server = start(port, store);
+        int bound = server.getAddress().getPort();
 
         // 没有 shutdown hook 时，SIGTERM 直接绕过 close()：WAL 尾部的记录不落 snapshot，
         // 容器停止即丢已确认写入。
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.println("Shutting down z-vector server...");
-            server.stop(2);
-            shutdownExecutor();
-            closeQuietly(vectorStore);
-        }, "z-vector-shutdown"));
+        Runtime.getRuntime().addShutdownHook(new Thread(
+                () -> shutdown(server, store), "z-vector-shutdown"));
 
-        System.out.println("z-vector server started on port " + port);
+        System.out.println("z-vector server started on port " + bound);
+        return new Boot(server, store, bound);
+    }
+
+    /**
+     * SIGTERM 那条路 —— shutdown hook 的函数体。
+     * <p>
+     * 抽成方法只为了一件事：长在 lambda 里时"hook 到底关没关 store"没有测试问得到，
+     * 而它当时（实测）一次都没关过：守卫写的是 {@code store instanceof AutoCloseable}，
+     * 而 {@code VectorStore} 改前不继承 {@code AutoCloseable} ⇒ 对这个进程唯一可能出现的
+     * 两个 store 恒为 false，close() 从来没被调用过。
+     */
+    static void shutdown(HttpServer server, VectorStore store) {
+        System.out.println("Shutting down z-vector server...");
+        server.stop(2);
+        shutdownExecutor();
+        closeQuietly(store);
+    }
+
+    private static String valueOr(String v, String fallback) {
+        return v == null ? fallback : v;
+    }
+
+    static IndexType parseIndexType(String raw, String where) {
+        try {
+            return IndexType.valueOf(raw.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            // 支持哪些取值不抄字面量：抄来的那一半会在 IndexType 加成员时变成第二条谎。
+            throw new IllegalArgumentException(where + " is not a known index type: \"" + raw
+                    + "\" (expected one of " + indexTypeNames() + ")");
+        }
+    }
+
+    private static String indexTypeNames() {
+        IndexType[] all = IndexType.values();
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < all.length; i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(all[i].name());
+        }
+        return sb.toString();
+    }
+
+    /** {@code ZVECTOR_INDEX_PARAMS}：一个 JSON 对象，形状与 REST body 里的 index_params 相同。 */
+    static Map<String, Object> parseIndexParams(String raw) {
+        if (raw.isEmpty()) return null;
+        Object parsed;
+        try {
+            parsed = objectMapper.readValue(raw, Object.class);
+        } catch (IOException e) {
+            throw new IllegalArgumentException("ZVECTOR_INDEX_PARAMS is not valid JSON: \""
+                    + raw + "\" (" + e.getMessage() + ")");
+        }
+        return asParamsMap(parsed, "ZVECTOR_INDEX_PARAMS");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asParamsMap(Object v, String where) {
+        if (v == null) return null;
+        if (!(v instanceof Map)) {
+            throw new IllegalArgumentException(where + " must be a JSON object, got: "
+                    + (v instanceof List ? "array" : v.getClass().getSimpleName()));
+        }
+        return new LinkedHashMap<>((Map<String, Object>) v);
     }
 
     /** 绑定 store 并在 port 上起服务。测试用 port=0 拿随机端口。 */
@@ -92,9 +205,11 @@ public class VectorServerApplication {
     }
 
     private static void closeQuietly(VectorStore store) {
-        if (!(store instanceof AutoCloseable)) return;
+        if (store == null) return;
         try {
-            ((AutoCloseable) store).close();
+            // 不再判 instanceof AutoCloseable：close() 本来就是 VectorStore 接口上的方法，
+            // 那道 instanceof 是多余的门，而且当时恒为 false（见 shutdown() 的说明）。
+            store.close();
         } catch (Exception e) {
             System.err.println("Failed to close vector store: " + e.getMessage());
         }
@@ -238,15 +353,36 @@ public class VectorServerApplication {
                 }
                 DistanceMetric metric = DistanceMetric.COSINE;
                 if (request.get("metric") instanceof String) {
-                    metric = DistanceMetric.valueOf(((String) request.get("metric")).toUpperCase());
+                    metric = DistanceMetric.valueOf(((String) request.get("metric")).toUpperCase(Locale.ROOT));
                 }
-                vectorStore.createCollection(name, dimensions, metric);
+                // index_type 此前是**收下来就丢**：OpenApiSpec 的 CreateCollectionRequest 广告了
+                // index_type（enum FLAT/HNSW/IVF），gRPC 侧那台 QdrantRestServer 也一直在读它，
+                // 只有这台独立 server 走 3 参那一支 ⇒ 客户端换到 Docker 部署就静默变成 FLAT，
+                // 而且回的是 200。缺省那一支保留 3 参：这样 ZVECTOR_DEFAULT_INDEX 才有生效的地方。
+                Object rawIndex = request.get("index_type");
+                Map<String, Object> indexParams = asParamsMap(request.get("index_params"),
+                        "index_params");
+                if (rawIndex == null) {
+                    vectorStore.createCollection(name, dimensions, metric);
+                } else {
+                    if (!(rawIndex instanceof String)) {
+                        throw new IllegalArgumentException("index_type must be a string, got: "
+                                + rawIndex.getClass().getSimpleName());
+                    }
+                    vectorStore.createCollection(name, dimensions, metric,
+                            parseIndexType((String) rawIndex, "index_type"), indexParams);
+                }
 
                 Map<String, Object> result = new LinkedHashMap<>();
                 result.put("status", "ok");
                 result.put("collection", name);
                 result.put("dimensions", dimensions);
                 result.put("metric", metric.name());
+                // 回读 store 里真正建出来的那个，而不是回吐客户端传进来的 —— 报"建好了 HNSW"
+                // 而建出来是 FLAT，正是这一系列缺陷的形状。
+                VectorCollection created = vectorStore.getCollection(name);
+                result.put("index_type", created.getIndexType().name());
+                result.put("index_params", created.getConfig());
                 sendJson(ex, 200, result);
             } else {
                 sendError(ex, 405, "Method not allowed: " + method);
