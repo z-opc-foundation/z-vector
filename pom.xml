@@ -85,7 +85,7 @@
         <junit.version>5.10.2</junit.version>
 
         <!-- z-util 复用：KMeans（替代自研）/ Linalg / NdArray / FileUtil -->
-        <zutil.version>1.0.9</zutil.version>
+        <zutil.version>1.0.13</zutil.version>
     </properties>
 
     <dependencyManagement>
