@@ -67,7 +67,7 @@
              代价是发布/安装的 pom 必须先把 `${revision}` 展开——flatten 因此挪出 central profile
              变成常开（见文末注释），否则 `mvn install` 会把带 `${revision}` 的 pom 装进 m2，
              下游解析 parent 时直接找不到构件。 -->
-        <revision>1.0.3</revision>
+        <revision>1.0.4</revision>
         <java.version>1.8</java.version>
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
