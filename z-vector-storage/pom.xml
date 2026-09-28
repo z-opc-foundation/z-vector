@@ -73,18 +73,19 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- jackson-databind 的 <version>2.18.6</version> 已删：版本改由父链的 jackson-bom
+             （z-boot-dependencies:1.0.19 → 2.18.6，与本仓原字面量同值）下发，实测 tree 没漂。 -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.18.6</version>
         </dependency>
 
         <!-- z-util 复用：FileUtil.mkdirs 等文件工具
-             排除 z-util-core 自带的 log4j-slf4j2-impl，避免与 Spring Boot 的 log4j-to-slf4j 冲突 -->
+             排除 z-util-core 自带的 log4j-slf4j2-impl，避免与 Spring Boot 的 log4j-to-slf4j 冲突
+             （<version>${zutil.version}</version> 同 core 模块一起删，改由 fleet 下发 1.0.13） -->
         <dependency>
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-util-core</artifactId>
-            <version>${zutil.version}</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.logging.log4j</groupId>

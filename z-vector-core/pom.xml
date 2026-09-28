@@ -58,11 +58,13 @@
 
         <!-- z-util 复用：KMeans（替代自研）/ NdArray / Linalg / FileUtil
              排除 z-util-core 自带的 log4j-slf4j2-impl，避免与 Spring Boot 的 log4j-to-slf4j 冲突；
-             由调用方按需引入日志后端（z-vector-core 自身用 slf4j-simple 即可）。 -->
+             由调用方按需引入日志后端（z-vector-core 自身用 slf4j-simple 即可）。
+             2026-09-28 parent 迁移：<version>${zutil.version}</version> 三处删掉，版本改由
+             z-boot-fleet 的 ${z-util.version}=1.0.13 下发（与本仓迁移前面值相同，实测 tree 没漂）；
+             本仓不再自己维护第四种 z-util 键名。 -->
         <dependency>
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-util-ml</artifactId>
-            <version>${zutil.version}</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.logging.log4j</groupId>
@@ -73,7 +75,6 @@
         <dependency>
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-util-math</artifactId>
-            <version>${zutil.version}</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.logging.log4j</groupId>
@@ -84,7 +85,6 @@
         <dependency>
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-util-core</artifactId>
-            <version>${zutil.version}</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.logging.log4j</groupId>

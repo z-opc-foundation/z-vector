@@ -5,11 +5,18 @@
                              http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
+    <!-- 消费入口统一走 z-boot-parent（1.0.19 起全组织口径）：继承第三方地板 z-boot-dependencies
+         + import 兄弟仓权威 z-boot-fleet + 下发 Java 8 的 pluginManagement。
+         这里原先的 parent 是 com.zifang:z-opc:1.0.0-SNAPSHOT —— 那个 pom 只存在于作者本机的
+         ~/.m2，对外从不发布；而 <relativePath>../pom.xml</relativePath> 指的是 z-opc-foundation
+         目录下**不存在**的 ../pom.xml（z-vector 自己就在 z-opc-foundation/ 里，上一层没有 pom）。
+         结果就是"换台机器连 pom 都读不动"：本机装过旧 parent 时永远测不出来。
+         relativePath 必须留空：新 parent 不在磁盘上，在 repo1。 -->
     <parent>
-        <groupId>com.zifang</groupId>
-        <artifactId>z-opc</artifactId>
-        <version>1.0.0-SNAPSHOT</version>
-        <relativePath>../pom.xml</relativePath>
+        <groupId>io.github.yuku123</groupId>
+        <artifactId>z-boot-parent</artifactId>
+        <version>1.0.19</version>
+        <relativePath/>
     </parent>
 
     <artifactId>z-vector</artifactId>
@@ -68,29 +75,60 @@
              变成常开（见文末注释），否则 `mvn install` 会把带 `${revision}` 的 pom 装进 m2，
              下游解析 parent 时直接找不到构件。 -->
         <revision>1.0.4</revision>
-        <java.version>1.8</java.version>
+        <!-- java.version / netty.version / jackson.version 三格 2026-09-28 迁移时删除：
+             新父链面值逐字节相同（z-boot-parent:1.0.19 → java.version=1.8；
+             z-boot-dependencies:1.0.19 → netty-bom 4.1.138.Final、jackson-bom 2.18.6），
+             留着就是"每个仓自己再钉一遍"的旧账，删掉后 dependency:tree 实测一件没漂。
+             ⚠ 删属性必须同时删掉引用它的 DM 条目/子模块 <version>，否则就是悬空属性。 -->
+        <!-- release 门禁不在这里，见文末 profile jdk9-plus-release-gate。 -->
+        <!-- maven.compiler.source/target 刻意留着：父链下发的是 "8"、这里是 "1.8"，
+             javac 语义等价但**字面不同值**，不在"与父链同值可删"那一档；本仓 Java 8 线要在
+             JDK 8 上跑 source/target（release 只在 JDK 9+ 生效），不在迁移这一刀里顺手换写法。 -->
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
-        <!-- release 门禁不在这里，见文末 profile jdk9-plus-release-gate。 -->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-        <!-- 第三方依赖版本 -->
-        <!-- 2026-09-28「同坐标单版本」：4.1.115.Final → 4.1.138.Final，与 z-boot-dependencies 1.0.18 的
-             netty-bom 同一口径（4.1.138 含 CVE 修复，4.1.x 内二进制兼容）。 -->
-        <netty.version>4.1.138.Final</netty.version>
+        <!-- 第三方依赖版本：以下四格**必须留着自钉**，逐条对过父链（z-boot-dependencies:1.0.19
+             + z-boot-fleet:1.0.0）的实测结果：
+               grpc.version=1.65.1      → 地板的 io.grpc 条目 0 条（fleet 也 0），父链完全没供给；
+               protobuf.version=3.25.5  → 地板只管 com.google.protobuf:protobuf-java 一件
+                                          （面值恰好也是 3.25.5，字面量写法），**protobuf-java-util
+                                          没有任何条目** ⇒ 删键 = 那一格悬空，Maven 当场报错；
+               slf4j.version=2.0.13     → 地板不直接管 slf4j-api（只在 log4j-to-slf4j 里 exclude 它），
+                                          实际走 import 进来的 spring-boot-dependencies 2.7.18 = 1.7.36，
+                                          与本仓 2.0.13 **面值不同** ⇒ 删掉就是静默降版本；
+               junit.version=5.10.2     → 地板的 junit-jupiter 是 5.9.3（property 名叫
+                                          junit-jupiter.version），与本仓 5.10.2 **面值不同**。
+             前两格是"父链没供给"，后两格是"父链给了但给得低" —— 删任意一格都等于不改判就换实现。 -->
         <grpc.version>1.65.1</grpc.version>
         <protobuf.version>3.25.5</protobuf.version>
-        <jackson.version>2.18.6</jackson.version>
         <slf4j.version>2.0.13</slf4j.version>
         <junit.version>5.10.2</junit.version>
 
-        <!-- z-util 复用：KMeans（替代自研）/ Linalg / NdArray / FileUtil -->
-        <zutil.version>1.0.13</zutil.version>
+        <!-- zutil.version 这一格 2026-09-28 迁移时删除：键名是全组织三种命名里最野的一种
+             （fleet/地板用 z-util.version，另有 7 个仓用 util.version），但**面值 1.0.13 与
+             fleet 的 z-util.version=1.0.13 完全相同** ⇒ 正确做法是删键 + 删掉引用它的
+             <version>，由 fleet 的 dependencyManagement 下发，而不是留一个"改个名就能对齐"的分歧。 -->
     </properties>
 
     <dependencyManagement>
         <dependencies>
-            <!-- z-vector 内部模块 -->
+            <!-- 本仓自家 8 个模块各钉一条 ${project.version}（含聚合 pom 自己那一格）。
+                 这一格不是装饰：继承来的 DM 会改写**传递依赖**的版本，而 fleet 里 z-vector 那一格
+                 钉的是 repo1 上的**已发布件**（实测 z-boot-fleet:1.0.0 → <z-vector.version>1.0.4</z-vector.version>，
+                 覆盖 z-vector-api/core/storage/protocol/grpc-server/server/spring-boot-starter 七格）。
+                 本仓当前 revision 恰好也是 1.0.4 ⇒ 今天补不补读数一样，但下一次抬 revision
+                 （1.0.5）而不补这格时，仓内构建与 z-vector-server 的 shade fat jar 就会把**上一个
+                 发布件的字节码**当 sibling 编进来 —— z-cache 试点实测踩过（1.3.6 的包里打进
+                 1.3.5 的 z-cache-common）。所以按全组织口径把 8 格钉死在 ${project.version}。
+                 fleet 没有 `io.github.yuku123:z-vector` 这一格（它只钉 7 个 jar 模块），
+                 这条聚合 pom 的条目纯粹是把 8 个 reactor 坐标补齐、口径一致。 -->
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-vector</artifactId>
+                <version>${project.version}</version>
+                <type>pom</type>
+            </dependency>
             <dependency>
                 <groupId>io.github.yuku123</groupId>
                 <artifactId>z-vector-api</artifactId>
@@ -121,14 +159,21 @@
                 <artifactId>z-vector-spring-boot-starter</artifactId>
                 <version>${project.version}</version>
             </dependency>
-
-            <!-- Netty -->
             <dependency>
-                <groupId>io.netty</groupId>
-                <artifactId>netty-all</artifactId>
-                <version>${netty.version}</version>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-vector-server</artifactId>
+                <version>${project.version}</version>
             </dependency>
 
+            <!-- netty-all / jackson-core / jackson-databind / jackson-annotations 四条连同
+                 ${netty.version}/${jackson.version} 属性一并删除：父链的 io.netty:netty-bom
+                 （4.1.138.Final）与 com.fasterxml.jackson:jackson-bom（2.18.6）面值相同，
+                 改由父链下发；实测迁移后 dependency:tree 的 6 件 jackson 版本一件没动。
+                 z-util-core/math/ml 三条同理删除，由 fleet 的 ${z-util.version}=1.0.13 下发。 -->
+
+            <!-- gRPC / Protobuf / slf4j / junit：留着自钉，理由见上面 properties 里逐条实测的注释
+                 （grpc 父链 0 条；protobuf-java-util 父链无条目；slf4j/junit 父链面值更低）。
+                 ⚠ 这一族本仓的 DM 条目是**直接**条目，优先级高于继承来的 ⇒ 不会被父链改写。 -->
             <!-- gRPC -->
             <dependency>
                 <groupId>io.grpc</groupId>
@@ -158,23 +203,6 @@
                 <version>${protobuf.version}</version>
             </dependency>
 
-            <!-- Jackson -->
-            <dependency>
-                <groupId>com.fasterxml.jackson.core</groupId>
-                <artifactId>jackson-core</artifactId>
-                <version>${jackson.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.fasterxml.jackson.core</groupId>
-                <artifactId>jackson-databind</artifactId>
-                <version>${jackson.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.fasterxml.jackson.core</groupId>
-                <artifactId>jackson-annotations</artifactId>
-                <version>${jackson.version}</version>
-            </dependency>
-
             <!-- Logging -->
             <dependency>
                 <groupId>org.slf4j</groupId>
@@ -195,21 +223,15 @@
                 <scope>test</scope>
             </dependency>
 
-            <!-- z-util 复用（来自 io.github.yuku123） -->
+            <!-- snakeyaml 必须按**坐标**写直接条目，不能指望任何 import：
+                 迁移前旧 parent（com.zifang:z-opc）的 DM 钉的是 2.0（CVE-2022-1471 那一串），
+                 而新父链跟着 spring-boot-dependencies 2.7.18 走 1.30 ⇒ 实测迁移后
+                 dependency:tree 从 2.0 静默降到 1.30（这一轮 diff 里唯一的一行）。
+                 同 z-cache 试点的处理：先在本仓把这一格顶住，"该由地板统一决定"的最终口径待 CEO 判。 -->
             <dependency>
-                <groupId>io.github.yuku123</groupId>
-                <artifactId>z-util-core</artifactId>
-                <version>${zutil.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.github.yuku123</groupId>
-                <artifactId>z-util-math</artifactId>
-                <version>${zutil.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.github.yuku123</groupId>
-                <artifactId>z-util-ml</artifactId>
-                <version>${zutil.version}</version>
+                <groupId>org.yaml</groupId>
+                <artifactId>snakeyaml</artifactId>
+                <version>2.0</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -238,9 +260,12 @@
 
         <plugins>
             <!-- 发布/安装的 pom 必须自包含，两个理由各吃过一次教训：
-                 1) 本仓的 parent 是 com.zifang:z-opc:1.0.0-SNAPSHOT，它永远不会（也不能）出现在
+                 1) 本仓的 parent 曾经是 com.zifang:z-opc:1.0.0-SNAPSHOT，它永远不会（也不能）出现在
                     Central 上。带着这个 parent 发出去的构件，任何外部消费者第一次解析就报
                     "Could not find artifact com.zifang:z-opc:pom:1.0.0-SNAPSHOT"，等于构件全废。
+                    （2026-09-28 已把 parent 换成 repo1 上真实存在的 io.github.yuku123:z-boot-parent:1.0.19，
+                     源码在别的机器上读得动了；但 flatten 常开的结论不变 —— 发布件仍不该把整条
+                     parent 链和它的 DM 形状绑给下游。）
                  2) 版本现在写的是 ${revision}（只在本文件 properties 里定义一次）。带着
                     ${revision} 的 pom 一旦装进 ~/.m2，下游解析 parent 时按字面量找
                     "z-vector:${revision}" 这个目录 ⇒ 直接 404，而且是在别人的构建里炸。
