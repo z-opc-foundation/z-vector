@@ -311,7 +311,7 @@ mvn -pl z-vector-storage -am test    # 单模块（务必带 -am）
 读写都在临时目录里；Java 8 线还受 flatten 版本闸（P5）与 `jdk9-plus-release-gate` 保护。
 
 静态清点（`rg -c "@Test"` + 文件枚举实测。**本次文档任务不跑 `mvn`，故只报件数、不声明通过数**；
-历史上最近一次全量对账读数在 `_doc/003_待办事项/feature001_hnsw_v2/TASK.md` §4）：
+历史上最近一次全量对账读数在 `_doc/007_backlog/feature001_hnsw_v2/TASK.md` §4）：
 
 | 模块 | 测试类 | `@Test` 数 | 主要覆盖 |
 |------|--------|-----------|----------|
@@ -349,7 +349,7 @@ docker run -d -p 6333:6333 -e ZVECTOR_DATA_DIR=/data/zvector \
   `java -jar` 直接 "no main manifest attribute"；`EXPOSE 9090` 也没有任何进程监听。
   它头部注释里"parent 是 `com.zifang:z-opc:1.0.0-SNAPSHOT` 所以换台机器读不动 pom"那一条**已过期**
   （2026-09-29 parent 已迁到 `z-boot-parent:1.0.21`，repo1 实测 200），但上面两条依旧成立。
-  这一份怎么修已记进 `_doc/003_待办事项/feature001_hnsw_v2/TASK.md` 等拍板。
+  这一份怎么修已记进 `_doc/007_backlog/feature001_hnsw_v2/TASK.md` 等拍板。
 - 发布：[`_doc/003_script/deploy_maven_center.sh`](_doc/003_script/deploy_maven_center.sh)
   子命令 `publish` / `verify` / `gpg-init` / `readme` / `help`；凭证只从被 `.gitignore` 排除的 `.env`
   读取（键名 `CENTRAL_USERNAME`、`CENTRAL_TOKEN`、`CENTRAL_GPG_PASSPHRASE`，密钥环走
@@ -372,14 +372,14 @@ MIT —— 见根 [`LICENSE`](LICENSE)（`Copyright (c) 2026 z-opc-foundation`�
 
 - [`_doc/003_script/`](_doc/003_script/) — 运维脚本（本仓唯一有实文件的分类目录）:
   - [`deploy_maven_center.sh`](_doc/003_script/deploy_maven_center.sh) — Maven Central 发布 / 校验 / GPG 初始化
-- [`_doc/003_待办事项/`](_doc/003_待办事项/) — 待办与收口登记:
-  - [`feature001_hnsw_v2/TASK.md`](_doc/003_待办事项/feature001_hnsw_v2/TASK.md) — #20「版本号单源」收口登记 +
+- [`_doc/007_backlog/`](_doc/007_backlog/) — 待办与收口登记:
+  - [`feature001_hnsw_v2/TASK.md`](_doc/007_backlog/feature001_hnsw_v2/TASK.md) — #20「版本号单源」收口登记 +
     四把尺（P1/P2/P3/P5）与 13 支变异电池读数 + 跨 JDK 对账。其 §5.4 记的「gRPC 广告与端口三个互相
     不打照面」「OpenApiSpec 生成了但没有端点服务它」两条，正是本 README「未接入」一节的上游依据。
     注意该目录虽名为 `feature001_hnsw_v2`，里面**不是** HNSW v2 的方案本体（文首已自注这次错位）
-- [`_doc/001_arch/`](_doc/001_arch/) — 目前为空目录，暂无架构文档
-- [`_doc/002_deploy/`](_doc/002_deploy/) — 目前为空目录，暂无部署文档
-- [`_doc/004_skill/`](_doc/004_skill/) — 目前为空目录，暂无 skill 定义
+- `_doc/001_arch/` — 目前为空目录，暂无架构文档
+- `_doc/002_deploy/` — 目前为空目录，暂无部署文档
+- `_doc/004_skill/` — 目前为空目录，暂无 skill 定义
 
 `deploy_maven_center.sh` 注释里指向的 `发布指引.md` 在本仓不存在（脚本自身是该目录里唯一的实体）。
 
