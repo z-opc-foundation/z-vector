@@ -1,343 +1,65 @@
-# z-vector — 自研向量数据库
+# z-vector
 
-> **对标 Milvus / Qdrant / LanceDB / Chroma / Weaviate 的 Java 向量数据库**
-> 设计融合: **zvec** 的 in-process 嵌入式架构 + **LanceDB** 的列存思想 + **Chroma** 的分层微服务
-> + **Faiss** 的量化与索引 + **Qdrant** 的 REST 协议 + **Milvus** 的集合生命周期。
-> Java 8 + Netty 4 + Spring Boot 2.7。
+> 自研 Java 向量数据库 —— in-process 嵌入式 + 可独立部署，ANN 检索 + Payload 过滤 + WAL/Snapshot 持久化，对外兼容 **Qdrant REST** 的协议形态。
 
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-1.0.1-blue?logo=apache-maven)](https://central.sonatype.com/search?q=g:io.github.yuku123+a:z-vector*)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-[![Java](https://img.shields.io/badge/Java-8%2B-orange)](https://openjdk.org)
-[![Docker](https://img.shields.io/badge/Docker-compose-2496ED)](docker-compose.yml)
+它解决的是"要在 JVM 里（或自己的容器里）做向量近邻检索，但不想为此养一套外部集群"的问题：
+同一份 `VectorStore` 接口既能嵌进 Spring Boot 应用（`z-vector-spring-boot-starter`），也能用
+`z-vector-server` 那台裸 `main()` 进程对外提供 REST；数据落在本地磁盘（WAL + Snapshot + 分页存储），
+重启后自己恢复，不需要 etcd / Zookeeper / 对象存储这类外部依赖。
 
----
-
-## 🚀 5 分钟接入
-
-### 方式一：嵌入式（同一 JVM 内使用，最快上手）
-
-```xml
-<dependency>
-    <groupId>io.github.yuku123</groupId>
-    <artifactId>z-vector-core</artifactId>
-    <version>1.0.1</version>
-</dependency>
-```
-
-```java
-VectorStore store = VectorStoreFactory.embedded(
-    new EmbeddedConfig("/tmp/z-vector-data")
-);
-
-store.createCollection("products", 768, DistanceMetric.COSINE);
-
-List<VectorPoint> points = Arrays.asList(
-    new VectorPoint("p1", embedText("iPhone 15 Pro"), Map.of("name", "iPhone 15 Pro", "price", 999)),
-    new VectorPoint("p2", embedText("MacBook Pro M3"), Map.of("name", "MacBook Pro", "price", 1999))
-);
-store.upsert("products", points);
-
-// 检索 top-10
-List<SearchResult> hits = store.search("products",
-    embedText("Apple 手机"),            // query 向量
-    10,                                // top-k
-    Filter.eq("price", 999)            // 元数据过滤
-);
-for (SearchResult h : hits) {
-    System.out.println(h.getId() + ": " + h.getScore() + " - " + h.getPayload());
-}
-```
-
-### 方式二：独立 server（REST）
-
-```bash
-docker run -d --name z-vector -p 6333:6333 ghcr.io/z-opc-foundation/z-vector:1.0.1
-```
-
-独立 server 是一个裸 `main()` 进程（`z-vector-server`），旋钮只有环境变量：
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `ZVECTOR_PORT` | `6333` | REST 监听端口（`0` = 让内核挑一个空闲端口） |
-| `ZVECTOR_DATA_DIR` | `/data/zvector` | 数据目录（WAL + Snapshot） |
-| `ZVECTOR_DEFAULT_INDEX` | 空 | 不带 `index_type` 的建集合请求用哪个索引：`FLAT` / `HNSW` / `IVF`，大小写不敏感；空串 = 不覆盖，走内置 `FLAT` |
-| `ZVECTOR_INDEX_PARAMS` | 空 | 上面那个索引的参数，一个 JSON 对象，例如 `{"M":16,"ef_construction":200}`（键与下面的 `index_params` 同形） |
-
-**拼错不降级**：`ZVECTOR_DEFAULT_INDEX=SPARSE` 或 `ZVECTOR_INDEX_PARAMS='M=7'` 会让进程启动即失败，
-日志里点名是哪一个变量 —— 一台把索引名拼错却悄悄跑成 FLAT 的容器，比它不起来更难查。
-
-镜像：这一份 README 上面那条 `ghcr.io/...` 是外部镜像，本机无法验证它在不在（匿名拉 manifest
-一律 403，分不清"私有"和"没有"）。**本地可复现的构建路径是 `z-vector-server/Dockerfile`**，它只需要
-一个已经打好的 fat jar：
-
-```bash
-mvn -pl z-vector-server -am clean package -DskipTests     # 少 -am 会静默拿线上旧构件编
-docker build -f z-vector-server/Dockerfile -t z-vector:local z-vector-server
-docker run -d -p 6333:6333 -e ZVECTOR_DEFAULT_INDEX=HNSW \
-    -e ZVECTOR_INDEX_PARAMS='{"M":16,"ef_construction":200}' z-vector:local
-```
-
-（仓根那份多阶段 `Dockerfile` 目前在干净机器上构建不出来，两条实测原因写在文件开头的注释里。）
-
-REST 建集合的 body 支持这些字段：
-
-| 字段 | 必填 | 说明 |
-|---|---|---|
-| `name` | 是 | 集合名 |
-| `dimensions` | 是 | 正整数（`4` 与 `4.0` 都收） |
-| `metric` | 否 | `COSINE`（默认）/ `L2` / `IP` / `HAMMING` |
-| `index_type` | 否 | `FLAT` / `HNSW` / `IVF`；**不写才吃 `ZVECTOR_DEFAULT_INDEX`** |
-| `index_params` | 否 | 一个 JSON 对象；跟着集合一起落 WAL，重启后仍然在 |
-
-响应会把**真正建出来的** `index_type` / `index_params` 回读给你（不是回吐请求里的值）：
-
-```bash
-curl -s -X PUT localhost:6333/collections -d \
-  '{"name":"products","dimensions":4,"metric":"L2","index_type":"HNSW","index_params":{"M":7}}'
-# {"status":"ok","collection":"products","dimensions":4,"metric":"L2","index_type":"HNSW","index_params":{"M":7}}
-```
-
-应用侧要么用**嵌入式** starter（方式一 + 下面的 `zvector.*` 配置），要么按<b>方式三</b>用社区
-Qdrant/Milvus 客户端打 REST/协议接口。starter **没有** "连远端 server" 的客户端模式，
-`z.vector.enabled / mode / host / port` 这一族属性在代码里不存在（Spring Boot 会连警告都不打地
-静默忽略，照着配就得到一个跑在默认端口上的嵌入式实例）—— 属性面只有一个前缀：
-
-```yaml
-zvector:
-  storage-type: persistent       # in-memory / persistent
-  data-dir: /data/zvector
-  server:
-    port: 6334                   # 嵌入式 REST 端口（0 = 不启动）
-    auto-start: true             # false = 连 REST 生命周期 Bean 都不建
-  default-index:
-    type: HNSW                   # 留空 = 不覆盖，走 store 内置的 FLAT
-    params:                      # HNSW 认 M / efConstruction / efSearch；IVF 认 nlist / nprobe / maxIter
-      M: 16
-      efConstruction: 200
-```
-
-`default-index` 管的是"没说用哪种索引"的那一类调用，即
-`store.createCollection(name, dimension, metric)` 这一支；显式传了 `IndexType` 的调用（含 REST
-建集合）照本宣科，不被它覆盖。写一个不存在的索引名会让应用启动失败，不会静默退回 FLAT。
-
-```java
-@RestController
-public class ProductController {
-    @Autowired private VectorStore vectorStore;
-
-    @PostMapping("/index")
-    public void index(@RequestBody List<Product> products) {
-        List<VectorPoint> points = products.stream()
-            .map(p -> new VectorPoint(p.getId(), embed(p), Map.of("name", p.getName())))
-            .toList();
-        vectorStore.upsert("products", points);
-    }
-
-    @GetMapping("/search")
-    public List<SearchResult> search(@RequestParam String q) {
-        return vectorStore.search("products", embed(q), 10, null);
-    }
-}
-```
-
-### 方式三：兼容 Milvus / Qdrant 协议
-
-z-vector server 同时暴露 Milvus gRPC + Qdrant REST 接口，**用 Milvus 或 Qdrant 的 client 直接连**：
-
-```python
-# Python + pymilvus
-from pymilvus import MilvusClient
-client = MilvusClient(uri="http://localhost:8181")
-client.create_collection("products", dimension=768)
-client.insert("products", [{"id": 1, "vector": [...], "name": "iPhone"}])
-hits = client.search("products", data=[[...]], limit=10)
-```
-
-```bash
-# Qdrant REST
-curl -X PUT http://localhost:8181/collections/products
-curl -X POST http://localhost:8181/collections/products/points -d '{...}'
-```
+⚠ 本 README 在 2026-09-30 做了一次**纠偏重写**：旧版广告过的 Milvus gRPC、DiskANN 索引、量化压缩、
+混合检索 / FTS、多租户 Namespace、"基于 etcd 的集群"、8181/8182 端口、构件版本 1.0.1 ——
+逐条回到代码里量过一遍，量不到的改写成下面「未接入」那一档的如实描述。
 
 ---
 
-## 📦 已发布到 Maven Central 的所有模块
+## 📋 基本信息
 
-> groupId: `io.github.yuku123` · version: **1.0.1**
-
-| 模块 | 说明 | 何时该引入 |
-|---|---|---|
-| `z-vector-api` | 抽象接口（VectorStore / Filter / Distance） | 二次开发 / 替换后端 |
-| `z-vector-core` | in-process 嵌入式实现（默认） | 单 JVM 内嵌 |
-| `z-vector-storage` | 持久化层（PageStore + WAL + Bloom + Snapshot） | 自定义存储 |
-| `z-vector-protocol` | 内部通信协议（写入 / 查询 / 编译） | 自定义协议 |
-| `z-vector-grpc-server` | gRPC server（兼容 Milvus） | 起独立 server |
-| `z-vector-spring-boot-starter` | Spring Boot 自动装配 | Spring Boot 应用 |
-
-> REST 接口（兼容 Qdrant）由 `z-vector-grpc-server` 内置 REST adapter 提供，无需额外模块。
-
----
-
-## ✨ 核心能力
-
-### 索引类型
-- ✅ **HNSW**（Hierarchical Navigable Small World，默认生产推荐）
-- ✅ **IVF**（Inverted File，大数据集）
-- ✅ **FLAT**（暴力精确，小数据集）
-- ✅ **PQ 量化**（Product Quantization，10x 压缩）
-- ✅ **SQ 量化**（Scalar Quantization，4x 压缩）
-
-### 距离度量
-- ✅ Cosine / Inner Product / L2 (Euclidean)
-- ✅ 自动归一化
-
-### 检索特性
-- ✅ **元数据过滤**（`eq` / `gt` / `lt` / `in` / `range` / `and` / `or` / `not`）
-- ✅ **混合检索**（向量 + 全文 BM25，RRF 融合）
-- ✅ **多向量字段**（同一 collection 内支持 dense + sparse 双向量）
-- ✅ **稀疏向量**（SPLADE / BM25 sparse）
-
-### 持久化（v2 Storage Engine）
-- ✅ **PageStore**（64KB 定长页 + CRC32 损坏检测）
-- ✅ **BufferPool**（LRU 256 页 ≈ 16MB 热点缓存）
-- ✅ **BloomFilter**（murmur3-128，重启时快速跳过已删 id）
-- ✅ **AsyncWalFile**（Group Commit 64 条/10ms，写入吞吐 5-10x）
-- ✅ **PageSnapshot**（增量 page manifest，冷备份只持久化变更页）
-- ✅ **MmapPageReader**（冷读 ~2x 加速，零系统调用）
-
-### 部署
-- ✅ **嵌入式**（同 JVM 进程内）
-- ✅ **独立 server**（gRPC + REST）
-- ✅ **集群模式**（基于 etcd 的元数据协调 + shard 数据分片）
-- ✅ **多租户**（namespace 隔离）
-- ✅ **可视化控制台**（React + AntD）
+| 字段 | 值 |
+|------|-----|
+| **仓库** | `z-vector` |
+| **Maven 坐标** | `io.github.yuku123:z-vector:${revision}`（聚合 POM，`packaging=pom`） |
+| **当前版本** | `1.0.5`（根 POM `<properties><revision>1.0.5</revision>` 是全仓唯一定义点，子模块不写自己的 `<version>`） |
+| **父项目** | `io.github.yuku123:z-boot-parent:1.0.21`（`<relativePath/>` 留空，parent 在 repo1 不在磁盘；2026-09-29 之前是 `com.zifang:z-opc:1.0.0-SNAPSHOT`，那个 pom 只在作者本机 `~/.m2` 里） |
+| **Maven Central** | 已发布（repo1 逐坐标 ranged GET 实测 200）：`z-vector` / `-api` / `-core` / `-storage` / `-protocol` / `-grpc-server` / `-spring-boot-starter` / `-server` 八个坐标的 `1.0.4` 与 `1.0.5` 全部 200；`z-vector-api` 的 maven-metadata 显示 `latest = release = 1.0.5`，历史 1.0.1–1.0.5 |
+| **默认端口** | **只有 HTTP，没有 gRPC**：独立 server `6333`（`ZVECTOR_PORT`）、starter 嵌入式 REST `6334`（`zvector.server.port`，`0` = 不起） |
+| **运行口径** | Java 8（`maven.compiler.source/target=1.8`；JDK 9+ 上 `jdk9-plus-release-gate` profile 追加 `release=8` 真闸）；Spring Boot 只出现在 starter 侧 |
+| **Reactor 模块** | 7 个（见结构树）；全仓 grep 不到任何 `maven.deploy.skip` ⇒ 8 个坐标（含聚合 POM）一起发 |
+| **最近更新** | 2026-09-30 |
 
 ---
 
-## ⚙️ 实用 Case（生产场景）
+## ✅ 能力清单（每一条都能指到实现）
 
-### Case 1: 语义搜索（电商商品）
+| 能力 | 实现位置 | 实测口径 |
+|------|----------|----------|
+| ANN 索引 | `core/index/FlatIndex` / `HnswIndex` / `IvfIndex`，由 `IndexFactory` 按 `IndexType` 分派 | **3 种**：`IndexType = {FLAT, HNSW, IVF}`（枚举里就这三个值） |
+| 距离度量 | `core/distance/{L2,InnerProduct,Cosine,Hamming}Distance` + `DistanceFactory` | 4 种：`DistanceMetric = {L2, IP, COSINE, HAMMING}`；`HAMMING` 是对 `floatToRawIntBits` 逐维 popcount 的位汉明距离，不是二进制向量专用通道 |
+| Payload 过滤 | `api/Filter` + `core/filter/PayloadIndex`（HashMap 倒排 + TreeMap 数值范围） | 工厂方法 `eq / ne / gt / gte / lt / lte / inValues / notIn / exists / contains / and / or`，另有实例方法 `not()` |
+| 检索形态 | `api/VectorStore` | `search(topK, Filter)` / `searchRange(distance_threshold)` / `searchBatch(多 query)` / `buildIndex` / `isIndexed` / `getIndexType` / `flush` |
+| 集合生命周期 | `core/collection/Collection` + `api/VectorCollection` | 建 / 查 / 删 / 列集合，`setDefaultIndex` 决定"没显式传 `IndexType`"时吃哪一种 |
+| 持久化 | `storage/PersistentVectorStore` + `storage/engine/StorageEngine` | WAL + Snapshot + 分页存储 + BufferPool + Bloom，见「本地存储」一节 |
+| HNSW 图持久化 | `core/index/HnswPersistence`，由 `PersistentVectorStore#tryLoadHnswFromDisk` 调用 | 落 `<dataDir>/hnsw_<collection>.bin`，重启优先 load 而非重建 |
+| mmap 冷读 | `storage/page/MmapPageReader`（`PageStore.useMmap(true)` 打开，默认关） | 读路径走 mmap，写后失效重建视图 |
+| Qdrant 形态 REST | `grpc-server/QdrantRestServer`（JDK `com.sun.net.httpserver`，非 Spring MVC） | 路由与字段见「API 一览」B 表 |
+| 独立 server | `server/VectorServerApplication`（全仓**唯一**一处 `public static void main`） | 4 条扁平路由 + 环境变量旋钮 |
+| Spring Boot 装配 | `starter/ZVectorAutoConfiguration` + `ZVectorProperties` + `META-INF/spring/...AutoConfiguration.imports` | 配置前缀只有一个：`zvector` |
+| OpenAPI 3.0.3 文本规范 | `protocol/ProtocolSpec` + `protocol/OpenApiSpec#generateSpec()` / `#getApiDocs()` | 生成 YAML / Map；**没有任何端点服务这份文档**（`OpenApiSpecRoutingTest` 只拿它核对路由表） |
 
-```java
-VectorStore store = VectorStoreFactory.embedded();
+### ❌ 未接入 / 只有类、没有可达路径（旧 README 当成"已实现"的那一批）
 
-// 1. 建集合 (768 维, cosine, HNSW)
-store.createCollection("products", 768, DistanceMetric.COSINE,
-    IndexType.HNSW, Map.of(
-        "M", 16,
-        "efConstruction", 200,
-        "ef", 100
-    ));
-
-// 2. 批量导入
-List<VectorPoint> products = productDb.findAll().stream()
-    .map(p -> new VectorPoint(p.getId(), embedding.embed(p.getName() + " " + p.getDesc()),
-                              Map.of("name", p.getName(), "category", p.getCategory(), "price", p.getPrice())))
-    .toList();
-store.upsert("products", products);
-
-// 3. 检索
-List<SearchResult> hits = store.search("products",
-    embedding.embed("苹果笔记本电脑"),
-    10,
-    Filter.and(
-        Filter.eq("category", "laptop"),
-        Filter.lt("price", 3000)
-    )
-);
-```
-
-### Case 2: 多模态（图像 + 文本混合检索）
-
-```java
-// 同一 collection 内多个向量字段
-store.createCollection("multimodal", Map.of(
-    "text_vec", FieldSpec.of(768, IndexType.HNSW),
-    "image_vec", FieldSpec.of(512, IndexType.HNSW)
-));
-
-// 索引
-VectorPoint p = new VectorPoint("doc-1");
-p.setVector("text_vec", embedText("风景照片"));
-p.setVector("image_vec", embedImage(photo));
-
-// 检索
-List<SearchResult> hits = store.searchMulti("multimodal",
-    Map.of("text_vec", embedText(query), "image_vec", embedImage(queryImage)),
-    10
-);
-```
-
-### Case 3: RAG 检索（带元数据过滤）
-
-```java
-List<SearchResult> hits = store.search("kb-vectors",
-    embedding.embed(question),
-    10,
-    Filter.and(
-        Filter.eq("workspace", "company-a"),
-        Filter.gte("created_at", "2026-01-01"),
-        Filter.in("source", "wiki", "confluence")
-    )
-);
-// 过滤后取 top-5 给 LLM
-List<String> contexts = hits.stream().limit(5).map(SearchResult::getPayload).toList();
-```
-
-### Case 4: 全文 + 向量混合检索
-
-```java
-// 建 collection 时开 FTS
-store.createCollection("docs", 768, DistanceMetric.COSINE,
-    IndexType.HNSW,
-    Map.of("enableFullTextSearch", true)
-);
-
-// 混合检索: RRF 融合
-SearchRequest req = SearchRequest.builder()
-    .query("机器学习入门")
-    .queryVector(embed("机器学习入门"))
-    .topK(50)
-    .hybrid(HybridConfig.rrf(0.5))    // 50% 向量 + 50% 全文
-    .build();
-List<SearchResult> hits = store.hybridSearch("docs", req);
-```
-
-### Case 5: 增量更新（无需重建索引）
-
-```java
-// 单条更新
-store.upsert("products", new VectorPoint("p100", newEmbedding, Map.of("name", "新上架商品")));
-
-// 批量更新（同一 namespace 不同 id 自动 upsert）
-List<VectorPoint> updates = ...
-store.upsert("products", updates);
-
-// 删除
-store.delete("products", List.of("p100"));
-
-// 查询
-assert store.get("products", "p100").isEmpty();
-```
-
-### Case 6: 持久化 + 恢复
-
-```java
-// 启动时: 加载已有 collection
-VectorStore store = VectorStoreFactory.embedded(
-    new EmbeddedConfig("/data/z-vector")
-);
-store.loadAll();    // 从磁盘恢复 (PageStore + WAL replay + Snapshot)
-
-// 运行时: 自动 WAL + 周期性 Snapshot
-store.upsert(...);    // 先写 WAL
-
-// 手动 Snapshot
-store.snapshot("products");
-
-// 重启后从最后 Snapshot + WAL 恢复
-store.loadAll();
-```
+| 旧广告 | 实测结论 |
+|--------|----------|
+| **Milvus gRPC 服务** | `z-vector-grpc-server` 里 **零 gRPC 依赖**：模块 POM 只引 api / core / jackson / slf4j，`z-vector-protocol` 是 `test` scope。`VectorServiceGrpc` 是 protobuf **风格**的 Builder POJO 门面（`getOrCreateStore` 甚至按集合名各 new 一个 `InMemoryVectorStore`），生产代码零调用方；仓内**没有任何 `.proto` 文件**，也没有进程监听 gRPC 端口。根 POM 的 `grpc.version=1.65.1` / `protobuf.version=3.25.5` 只活在 `dependencyManagement` 里，没有模块声明它们 |
+| **DiskANN 磁盘索引** | `core/index/DiskAnnIndex` + `DiskAnnIndexTest` 在树上，但它**不 `implements Index`**，`IndexType` 与 `IndexFactory` 也没有对应档位 ⇒ 无论 API 还是 REST 都建不出这种索引 |
+| **量化压缩（FP16 / INT8 / PQ / BINARY）** | `core/quantizer/*` 五个类 + `api/QuantizationType` 枚举齐全，但量化器没有进 `Collection` / `VectorStore` / REST 任何一条路径：`VectorCollection` 上没有 `setQuantization`，`QuantizerFactory` 只被 `QuantizerTest` 引用。唯一真实用到聚类的是 `IvfIndex` → `KMeansAdapter` → z-util-ml 的 KMeans |
+| **混合检索（RRF + Weighted）** | `core/search/HybridSearch` 只被 `HybridSearchTest` 引用；`store.hybridSearch(...)`、`SearchRequest.builder()`、`HybridConfig.rrf(...)` 这些 API **在仓库里不存在** |
+| **全文检索 FTS / BM25 / 中文分词** | `core/fts/{FTSIndex,BM25Scorer,SimpleTokenizer,JiebaTokenizer,TextAnalyzer}` 存在，但除自身测试外无人调用：`createCollection` 没有 `enableFullTextSearch` 这一档，REST 也没有文本查询入口 |
+| **多租户 Namespace** | `api/namespace/{Namespace,NamespaceManager}`（权限位掩码 + 配额）只被 `NamespaceTest` 引用；`VectorStore` 每个方法签名里都没有 namespace 参数 |
+| **集群模式（"基于 etcd 的元数据协调 + shard 分片"）** | `storage/distributed/ClusterManager` 是一个纯 `ConcurrentHashMap` 记账对象：仓内 grep 不到 etcd / zookeeper / socket / HTTP 客户端，只有 `ClusterManagerTest` 用它。全仓没有网络通信实现 |
+| **REST 的 scroll / delete-by-filter** | `QdrantRestServer` 路由表里没有这两条（`scroll`、`points/delete` 无命中）；`/collections/{name}/points` 只认 `PUT`（upsert） |
+| **可视化控制台 / 前端镜像** | 仓内没有 `_frontend/`、`console/` 或任何 JS 资产；`z-vector-console` 镜像无从证实 |
+| **示例里的 `Map.of` / `List.of` / `.toList()`** | 本仓 target 是 Java 8，这些 Java 9+ API 在 `-release 8` 闸下当场编译失败（commit `03ea768` 就是把它变成真闸）；旧 README 的示例因此**跑不通**，本文件示例已改成 Java 8 写法 |
 
 ---
 
@@ -345,675 +67,320 @@ store.loadAll();
 
 ```
 z-vector/
-├── pom.xml                          # 自给自足 parent
-├── z-vector-api/                    # 抽象接口
-├── z-vector-core/                   # in-process 引擎（HNSW/IVF/FLAT/PQ）
-├── z-vector-storage/                # PageStore + BufferPool + WAL + Snapshot
-├── z-vector-protocol/               # gRPC / REST 协议
-├── z-vector-grpc-server/            # 独立 server（gRPC + REST adapter）
-├── z-vector-spring-boot-starter/    # Spring Boot 自动装配
-└── README.md
+├── pom.xml                          # 聚合 POM：parent=z-boot-parent:1.0.21，<revision> 单源，flatten 常开
+├── Dockerfile                       # 仓根多阶段镜像（当前打不出可运行件，见「部署」）
+├── LICENSE                          # MIT
+├── z-vector-api/                    # 抽象层：VectorStore / VectorPoint / SearchResult / VectorCollection /
+│                                    #   Filter / DistanceMetric / IndexType / QuantizationType / VectorException /
+│                                    #   VectorStoreFactory（只有 inMemory() 与 persistent(dataDir)）/ namespace/
+├── z-vector-core/                   # 引擎：distance(4) / index(Flat,HNSW,IVF + HnswPersistence + DiskAnnIndex) /
+│                                    #   collection / filter(PayloadIndex) / quantizer(4 + factory) /
+│                                    #   search(HybridSearch) / fts(BM25…) / cluster(KMeansAdapter→z-util-ml)
+├── z-vector-storage/                # 持久化：PersistentVectorStore + engine(StorageEngine) + wal(WalFile,AsyncWalFile) /
+│                                    #   page(Page,PageId,PageType,PageStore,MmapPageReader) / buffer(BufferPool) /
+│                                    #   bloom(BloomFilter,MurmurHash3) / snapshot(Snapshot,PageSnapshot,
+│                                    #   HybridSnapshot,PointPageCodec) / distributed(ClusterManager，未接网络)
+├── z-vector-protocol/               # 协议描述：ProtocolSpec + OpenApiSpec（OpenAPI 3.0.3 文本 / Map 生成）
+├── z-vector-grpc-server/            # 模块名与实现不符：QdrantRestServer（HTTP）+ VectorServiceGrpc（POJO 门面），
+│                                    #   零 gRPC / protobuf 依赖
+├── z-vector-spring-boot-starter/    # ZVectorAutoConfiguration / ZVectorProperties(zvector.*) / REST 生命周期
+├── z-vector-server/                 # 独立 server（裸 main + JDK HttpServer）+ shade fat jar + 自己的 Dockerfile
+└── _doc/                            # 文档，见文末「文档目录」
 ```
+
+依赖方向（逐个模块 POM 实测）：`api ← core ← storage`、`api ← core ← grpc-server ← starter`、
+`server → core + storage`，`protocol` **谁也不引**（只在 `grpc-server` 的测试里以 `test` scope 出现）。
+一个容易踩的点：starter **不依赖 `z-vector-storage`** —— `zvector.storage-type: persistent` 是靠
+`Class.forName("com.zifang.z.vector.storage.PersistentVectorStore")` 反射装配的，缺件时只 `log.warn`
+并退回 `InMemoryVectorStore` ⇒ 要持久化必须自己额外引 `z-vector-storage`。
 
 ---
 
-## 🔧 高级配置
+## 🔧 技术栈
 
-### Embedded 配置
-
-Spring Boot 侧的配置面只有一个前缀 `zvector`，全部键如下（多写一个键 Spring 会静默忽略，
-所以这一节之外的写法都不作数）：
-
-```yaml
-zvector:
-  storage-type: persistent       # in-memory / persistent
-  data-dir: /var/lib/z-vector
-  server:
-    port: 6334                   # 嵌入式 REST 端口（0 = 不启动）
-    auto-start: true             # false = 连 REST 生命周期 Bean 都不建
-  default-index:
-    type: HNSW                   # 留空 = 不覆盖，走 store 内置的 FLAT
-    params:
-      M: 16
-      efConstruction: 200
-```
-
-缓冲池大小、Bloom 容量/假阳率、checkpoint 间隔这些**不在 yml 里**，在 Java 构造器上：
-
-```java
-// 每多少条 WAL 触发一次 snapshot
-VectorStore store = new PersistentVectorStore("/var/lib/z-vector", 1000, true);
-// bloom 期望元素数 / 目标假阳率 / 缓冲池页数
-StorageEngine engine = new StorageEngine("/var/lib/z-vector", wal, 100_000L, 0.01, 256);
-```
-
-### Server 配置（k3s）
-
-```yaml
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: z-vector
-  namespace: z-vector
-spec:
-  replicas: 3
-  selector:
-    matchLabels: {app: z-vector}
-  template:
-    metadata:
-      labels: {app: z-vector}
-    spec:
-      containers:
-        - name: z-vector
-          image: ghcr.io/z-opc-foundation/z-vector:1.0.1
-          ports: [{containerPort: 8181}]
-          volumeMounts:
-            - name: data
-              mountPath: /app/data   # 必须等于镜像里的 ZVECTOR_DATA_DIR，挂到别处等于没持久化
-          resources:
-            requests: {cpu: 2, memory: 4Gi}
-            limits:   {cpu: 8, memory: 16Gi}
-  volumeClaimTemplates:
-    - metadata: {name: data}
-      spec:
-        accessModes: [ReadWriteOnce]
-        resources:
-          requests: {storage: 100Gi}
-```
+| 层级 | 技术（全部取自 POM 实测） |
+|------|---------------------------|
+| 语言 / 运行时 | Java 8（`maven.compiler.source/target=1.8`；JDK 9+ 另有 `maven.compiler.release=8` 闸） |
+| 构建 | Maven 多模块；`flatten-maven-plugin` **钉在 1.5.0**（1.6.0 起要求 Maven 3.6.3，而门禁机是 3.6.0，flatten 已常开 ⇒ 抬号会打死全仓构建，PomVersionContractTest 的 P5 尺盯着这条）；`maven-shade-plugin:3.5.1` 打 `z-vector-server` 的 fat jar |
+| 版本供给 | `z-boot-parent:1.0.21` → 第三方地板 `z-boot-dependencies` + 兄弟仓权威表 `z-boot-fleet`；netty 4.1.138.Final、jackson 2.18.6 已改由父链下发，本仓删掉了自钉的 `<netty.version>` / `<jackson.version>` |
+| 本仓仍自钉的第三方 | `slf4j 2.0.13`、`junit-jupiter 5.10.2`（父链面值更低）、`snakeyaml 2.0`（直接条目，防被父链降到 1.30）、`grpc 1.65.1` + `protobuf 3.25.5`（**仅 dependencyManagement，无模块引用**） |
+| 工具库复用 | `io.github.yuku123:z-util-{core,math,ml}`：版本 1.0.13 由 fleet 的 `${z-util.version}` 下发（本仓已删自有的 `zutil.version` 键），并显式排除 `log4j-slf4j2-impl` 以免与 Spring Boot 的 `log4j-to-slf4j` 抢日志后端 |
+| Spring Boot | 仅 starter：`spring-boot-autoconfigure` / `-starter-web` / `-starter-actuator` / `-starter-test`，模块 POM 里写的是 **`2.7.12`**（`<optional>true</optional>`），与父链地板的 2.7.18 是两套面值 —— 实际运行版本由消费方自己的 Spring Boot 决定 |
+| HTTP 服务 | JDK 自带 `com.sun.net.httpserver.HttpServer`（两台 server 都是它，不是 Spring MVC），JSON 用 Jackson |
+| 测试 | JUnit 5（`junit-jupiter 5.10.2`）+ `maven-surefire-plugin 3.2.5` |
 
 ---
 
-## 🐳 Docker Compose
+## 🚀 快速开始
 
-```yaml
-services:
-  z-vector:
-    image: ghcr.io/z-opc-foundation/z-vector:1.0.1
-    ports:
-      - "8181:8181"   # gRPC (Milvus 兼容)
-      - "8182:8182"   # REST (Qdrant 兼容)
-    volumes:
-      - ./data:/app/data          # 对齐镜像里的 ZVECTOR_DATA_DIR=/app/data
-    environment:
-      JVM_OPTS: "-Xms2g -Xmx8g"   # 镜像 ENTRYPOINT 读的是 JVM_OPTS，不是 JAVA_OPTS
-      ZVECTOR_PORT: "6333"
-      ZVECTOR_DATA_DIR: "/app/data"
-
-  console:
-    image: ghcr.io/z-opc-foundation/z-vector-console:1.0.1
-    ports: ["3000:3000"]
-    depends_on: [z-vector]
-```
-
----
-
-## 📊 性能基准（4 核 16G，1M 768 维向量）
-
-| 索引 | 写入 QPS | 检索 P99 (k=10) | 内存 |
-|---|---|---|---|
-| FLAT | 8,000 | 280ms | 3.1GB |
-| HNSW (M=16) | 5,500 | 8ms | 3.8GB |
-| HNSW + PQ32 | 8,200 | 12ms | 1.2GB |
-| IVF (nlist=4096) | 11,000 | 18ms | 3.4GB |
-
----
-
-## 🧪 完整测试覆盖
-
-```
-单元测试:       267 PASS
-集成测试:       52 PASS  (含 HNSW/IVF/PQ/Filter/Hybrid)
-Spring Boot:   8 PASS   (context load + AutoConfiguration)
-REST 一致性:    31 PASS  (对比 Qdrant v1.5)
-gRPC 一致性:    14 PASS  (对比 Milvus v2.3)
-```
-
----
-
-## 📚 详细文档
-
-- [索引类型选型](docs/INDEX_TYPES.md)
-- [距离度量](docs/DISTANCE_METRICS.md)
-- [Filter 语法](docs/FILTER_SYNTAX.md)
-- [持久化 v2 Storage Engine](docs/STORAGE_ENGINE.md)
-- [混合检索 RRF](docs/HYBRID_SEARCH.md)
-- [集群模式](docs/CLUSTER_MODE.md)
-- [Qdrant REST 兼容](docs/QDRANT_COMPAT.md)
-- [Milvus gRPC 兼容](docs/MILVUS_COMPAT.md)
-- [运维手册](docs/OPERATIONS.md)
-
----
-
-## 🤝 贡献
+### 编译 / 安装
 
 ```bash
-mvn clean verify
-docker compose up -d    # 起 server
-# 用 REST 客户端访问 http://localhost:8182
+mvn clean install -DskipTests
 ```
 
----
+版本只在根 POM 的 `<revision>` 出现一次、子模块一律继承，所以**模块级构建少写 `-am` 会静默拿本地
+仓库里的上一发布件编译**（P3 尺就是为了这条）。
 
-## 📄 许可证
+### 嵌入式（同一 JVM，Java 8 写法）
 
-[MIT License](LICENSE)
-
----
-
-## 🔗 相关项目
-
-| 项目 | 关系 |
-|---|---|
-| [z-cache](https://github.com/z-opc-foundation/z-cache) | 同系列 — 分布式缓存 |
-| [z-mq](https://github.com/z-opc-foundation/z-mq) | 同系列 — 分布式消息队列 |
-| [z-kb](https://github.com/z-opc-foundation/z-kb) | z-vector 是 z-kb 的向量检索后端 |
-| [z-graph](https://github.com/z-opc-foundation/z-graph) | z-vector 是 z-graph 的属性索引 |
-| [z-rpc](https://github.com/z-opc-foundation/z-rpc) | 同系列 — RPC 框架 |
-| [z-boot](https://github.com/z-opc-foundation/z-boot) | 同系列 — Spring Boot Starter 聚合 + BOM |
-
-> **通过 [z-boot-vector-starter](https://central.sonatype.com/artifact/io.github.yuku123/z-boot-vector-starter) 可以一行 import 集成 z-vector + 自动锁定版本**
-
----
-
-## 📮 联系
-
-- GitHub Issues: 提交 bug / feature request
-- Email: yuku123@users.noreply.github.com
-
-## 一句话定位
-
-z-vector 是一个 **Java 语言、面向 Spring Boot 生态、in-process + 可持久化、兼容 Qdrant REST + Milvus gRPC 协议** 的工业级向量数据库，对标 Milvus / Qdrant 的核心能力（ANN 检索 + Payload 过滤 + 持久化 + HNSW 持久化 + 量化 + FTS 全文检索 + DiskANN 磁盘索引 + 多租户 + 分布式），但通过"嵌入式 + 标准协议"简化部署。
-
-## 本地存储 v2（页面 + 缓冲池 + Bloom + 异步 WAL）
-
-z-vector v2 在原有 WAL + Snapshot 之上，新增了一层 **`StorageEngine`** 门面，整合以下现代数据库的成熟设计：
-
-| 子模块 | 设计来源 | 解决的问题 | 测试数 |
-|---|---|---|---|
-| **Page**（64KB 定长页 + CRC32） | RocksDB block / PostgreSQL page | 随机寻址 + 损坏检测 | — |
-| **PageStore**（`pages_<cid>.pgs`） | RocksDB SST file / SQLite page | 大数据集按页随机访问 | 10 |
-| **BufferPool**（LRU 256 页 ≈ 16MB） | RocksDB BlockCache / PG Buffer Pool | 热点页缓存，I/O 减少 90% | 9 |
-| **BloomFilter**（murmur3-128 + Kirsch hash） | Milvus field stats / HBase bloom | 重启恢复时避免遍历已删 id | 9 |
-| **AsyncWalFile**（Group Commit 64 条 / 10ms） | zvec max_docs_wal_flush | 写入吞吐 5-10x | 9 |
-| **PageSnapshot**（增量 page manifest） | LanceDB Manifest / LSM level | 只持久化变更页，I/O 大幅减少 | 7 |
-| **StorageEngine**（统一门面，默认启用） | 自研 | 串联上述组件 + 端到端指标；v2 默认集成到 PersistentVectorStore | 10 |
-| **MmapPageReader**（可选启用，reflect Cleaner） | SQLite mmap / LMDB | 冷读 ~2x 加速，零系统调用 | 5 |
-| **HybridSnapshot**（PageSnapshot v2 + Snapshot v1 fallback） | 自研 | 二进制 point 序列化，启动 ~2x，磁盘 50% | — |
-| **PointPageCodec**（二进制点编码 + 分页） | 自研 | 替换 JSON，~5x 启动加速 | — |
-
-### 文件布局
-
+```xml
+<dependency>
+    <groupId>io.github.yuku123</groupId>
+    <artifactId>z-vector-core</artifactId>   <!-- 需要落盘就再加 z-vector-storage -->
+    <version>1.0.5</version>
+</dependency>
 ```
-<dataDir>/
-├── wal.log                  # Write-Ahead Log（binary，每条 23B header + payload + 4B CRC）
-├── snapshot.json            # 全量 snapshot（JSON，包含 points + schema）
-├── psnap_meta.bin           # v2：增量 page snapshot manifest（PageSnapshot 写入）
-├── hnsw_<col>.bin           # HNSW 索引图（按集合）
-├── pages_<cid>.pgs          # v2：页面存储（每集合一个文件，每页 64KB）
-└── psnap_<cid>_<type>_<no>.bin  # v2：单 page 增量 snapshot（预留扩展点）
-```
-
-> **v2 默认集成**：构造 `PersistentVectorStore(dataDir)` 即自动启用 StorageEngine；
-> 通过 `useStorageEngine=false` 可退回同步 WAL（兼容旧路径）。
-
-### 关键特性
-
-#### 1. 页面化存储（Page / PageStore）
-- 64KB 定长页，header 17B（magic "ZVP1" + type + collectionId + pageNo + payloadLen）
-- payload 区域最大 ~64KB
-- 末尾 4B CRC32（写入后立即校验 + 崩溃时识别无效页）
-- 同一集合的所有 page 存在一个 `pages_<cid>.pgs` 文件，按 pageNo 寻址
-
-#### 2. LRU Buffer Pool
-- 默认 256 页 = 16MB（可配）
-- 命中：直接返回内存 page；未命中：加载并加入缓存
-- 命中后自动移到 LRU 尾部
-- 满容量时驱逐最久未访问页；dirty 页驱逐会 warn（建议先 flushDirty）
-- 暴露 `hits / misses / evictions / hitRate` 指标
-
-#### 3. Bloom Filter
-- 每个集合独立 Bloom Filter
-- 默认 100K 容量 / 1% 误判率 → ~96KB 位图
-- 启动时从 snapshot + WAL 重建
-- 写入时 `add()`；查询时 `mightContain()`（无假阴性）
-- MurmurHash3-x64-128 + Kirsch-Mitzenmacher 双 hash 组合
-
-#### 4. Group Commit Async WAL
-- 64 条 / 10ms 二者满足其一即刷盘
-- 后台 daemon 线程消费队列，单次 fsync 处理整批
-- `flush()` / `flushAndTruncate()` 强制等待落盘
-- `close()` 自动 drain 队列 + 退出线程
-- 暴露 `totalAppended / totalFlushed / totalBatches / queueSize` 指标
-
-#### 5. MmapPageReader（可选）
-- `PageStore.useMmap(true)` 启用 → read 走 mmap 路径，零系统调用
-- 写后自动 invalidate 旧 mmap 视图（下次 read 重新 mmap）
-- 通过反射 `sun.misc.Cleaner.clean()` 主动释放，避免依赖 Full GC
-- 适用场景：冷读多 / 单集合文件大（> 64MB）；写入密集场景不建议启用
-- 实测加速：macOS 上 ~2x（OS page cache 部分抹平优势）
-
-#### 6. HybridSnapshot（v2 Page-based snapshot，默认）
-- 写路径：`PointPageCodec` 把 points 编码为二进制 → 拆为多 DATA page 写入 PageStore → `PageSnapshot.writeAll` 写入 schema + page 列表
-- 读路径：优先 v2 PageSnapshot；缺失时回退 v1 Snapshot.json（自动迁移）
-- 启动收益：去掉 Jackson 解析 + 紧凑二进制 → 1000 点启动 ~2-3x 加速；磁盘大小约 v1 的 50%
-- 向后兼容：v1 Snapshot.json 自动迁移到 v2（下次 checkpoint 时删除）
-
-### 使用示例
 
 ```java
-// 启动 StorageEngine（包装现有 WalFile）
-WalFile wal = new WalFile("/data/zvec");
-StorageEngine engine = new StorageEngine("/data/zvec", wal);
+// VectorStoreFactory 只有 inMemory() / persistent(dataDir) 两个入口
+VectorStore store = VectorStoreFactory.persistent("/tmp/z-vector-data");
 
-// 写路径：批量提交到 WAL，mark bloom 加速存在性判断
-for (VectorPoint p : batch) {
-    engine.appendWal(WalRecord.upsertPoint("docs", p));
-    engine.markBloom("docs", p.getId());
+store.createCollection("products", 768, DistanceMetric.COSINE,
+        IndexType.HNSW, Collections.singletonMap("M", 16));
+
+Map<String, Object> payload = new HashMap<String, Object>();
+payload.put("name", "iPhone 15 Pro");
+payload.put("price", 999);
+List<VectorPoint> batch = new ArrayList<VectorPoint>();
+batch.add(new VectorPoint("p1", embedText("iPhone 15 Pro"), payload));
+store.upsertBatch("products", batch);
+
+List<SearchResult> hits = store.search("products", embedText("Apple 手机"), 10,
+        Filter.and(Filter.eq("name", "iPhone 15 Pro"), Filter.lt("price", 3000)));
+for (SearchResult h : hits) {
+    System.out.println(h.getVectorId() + " " + h.getScore() + " " + h.getPayload());
 }
-engine.flushWal();   // 阻塞直到所有 pending 落盘
 
-// 读路径：BufferPool + PageStore + Bloom 三级过滤
-if (engine.mightContain("docs", targetId)) {
-    Page page = engine.fetchPage(PageId.of("docs", PageType.DATA, pageNo));
-    // ... process page.payload() ...
-}
-
-// 指标
-System.out.println(engine.metrics());
-// StorageEngine{walAppended=10000, walFlushed=10000, walBatches=156, walQueue=0,
-//               bufferHits=8234, bufferMisses=100, bufferHitRate=98.8%, ...}
-
-// 关闭（自动 flushDirty + 退出 flusher）
-engine.close();
+store.flush("products");   // checkpoint：写 snapshot + HNSW 图，并截断 WAL
+store.close();             // close() 是 VectorStore 接口上的方法，PersistentVectorStore 会落盘
 ```
 
-### 与业界对比
+索引参数键名（实测 `IndexFactory`）：HNSW 认 `M` / `efConstruction` / `efSearch`（默认 16 / 200 / 50），
+IVF 认 `nlist` / `nprobe` / `maxIter`（默认 64 / 8 / 20）；持久化层把参数存成字符串，
+`IndexFactory.intParam` 同时接受 `Number` 与 `"32"` / `"32.0"` 两种形态，否则每次重启索引参数会静默回落。
 
-| 维度 | z-vector v2 | RocksDB | LevelDB | SQLite WAL |
-|---|---|---|---|---|
-| 页面大小 | 64KB | 4-32KB | 4KB-128KB | 4KB |
-| Buffer Pool | LRU | LRU + HyperClock | LRU | mmap |
-| Bloom Filter | ✅（每集合） | ✅（每 SST） | ❌ | ❌ |
-| 异步 WAL | ✅ Group Commit | ❌（同步） | ❌ | ✅ |
-| CRC 校验 | ✅（每页） | ✅（每 block） | ✅ | ✅ |
-| Java 原生 | ✅ | ❌（需 JNI） | ❌ | ❌ |
-
-## 复用 z-util（公共工具库）
-
-z-vector 主动复用 `idea_workplace/z-util` 的成熟模块，避免重复造轮子：
-
-| 复用的 z-util 组件 | 用于 z-vector 哪里 | 替代的本地代码 |
-|---|---|---|
-| `z-util-ml` 的 `KMeans` (Lloyd 算法 + K-means++ 初始化) | `IvfIndex.build()` + `ProductQuantizer.train()`（通过 `KMeansAdapter` 适配） | 两个手写的 60 行 K-means 实现（-120 行） |
-| `z-util-math` 的 `NdArray` / `DType` / `Linalg` | `KMeansAdapter` 把 float[][] ↔ NdArray 桥接 | 手写转换逻辑 |
-| `z-util-core` 的 `FileUtil.mkdirs` | `HnswPersistence.save()` 的目录创建 | `Files.createDirectories` |
-
-z-util 依赖通过 `<zutil.version>1.0.9</zutil.version>` 统一管理，已在 `z-vector-core` / `z-vector-storage` 中声明。**`log4j-slf4j2-impl` 已显式排除**，避免与 Spring Boot 自带的 `log4j-to-slf4j` 冲突。
-
-## 模块架构
-
-```
-z-vector-parent (parent, packaging=pom, Java 1.8)
-├── z-vector-api              公开 API 与数据模型（immutable POJOs + VectorStore 接口 + Namespace 多租户）
-├── z-vector-core              核心引擎
-│   ├── distance/             L2 / IP / Cosine / Hamming 4 种距离 + DistanceFactory
-│   ├── index/                Flat / HNSW / IVF / DiskANN 4 种 ANN 索引 + IndexFactory + HnswPersistence
-│   ├── collection/           Collection 生命周期管理 + replaceIndex
-│   ├── filter/               PayloadIndex（倒排 + 数值 TreeMap 范围）
-│   ├── search/               HybridSearch（RRF + 加权融合）
-│   ├── fts/                  FTSIndex 全文检索（倒排索引 + BM25 + 中文 bigram 分词）
-│   └── quantizer/            FP16 / INT8 / PQ(K-means) / BINARY + QuantizerFactory
-├── z-vector-storage           持久化层（PersistentVectorStore = WAL + Snapshot + HNSW 持久化 + 分布式）
-│   └── distributed/          ClusterManager（一致性哈希 + 心跳 + 故障转移）
-├── z-vector-protocol         协议层（Milvus 兼容 Spec + Qdrant REST + OpenAPI 3.0 规范生成）
-├── z-vector-grpc-server       服务端（Qdrant REST + Milvus gRPC 服务，纯 Java 实现）
-└── z-vector-spring-boot-starter Spring Boot 自动装配（VectorStore Bean + REST 生命周期）
-```
-
-## 核心能力（17 项全部已实现）
-
-| # | 能力 | 实现状态 | 实现细节 | 参考来源 |
-|---|---|---|---|---|
-| 1 | **距离度量** | ✅ 4 种 | L2 / InnerProduct / Cosine / Hamming | zvec / Faiss / Milvus |
-| 2 | **ANN 索引** | ✅ 4 种 | Flat / HNSW / IVF / **DiskANN**（Vamana 图） | HNSW 论文 / Faiss / Qdrant / DiskANN |
-| 3 | **Payload 过滤** | ✅ 表达式 | AND/OR/NOT + eq/ne/gt/gte/lt/lte/in/not_in/exists/contains | Qdrant / zvec / Milvus |
-| 4 | **负载索引** | ✅ 倒排 + 范围 | ExactIndex（HashMap）+ NumericIndex（TreeMap tailMap/headMap） | Qdrant |
-| 5 | **量化压缩** | ✅ 4 种 | FP16（IEEE 754）/ INT8（线性 min-max）/ PQ（K-means）/ Binary | Faiss / zvec |
-| 6 | **混合检索** | ✅ 2 种融合 | RRF（Reciprocal Rank Fusion）+ Weighted 加权融合 | zvec / Weaviate |
-| 7 | **持久化** | ✅ WAL + Snapshot | 二进制 WAL（CRC32）+ JSON Snapshot + 自动 checkpoint + 崩溃恢复 | SQLite / zvec / LanceDB |
-| 8 | **HNSW 持久化** | ✅ 图跨重启 | 二进制 HNSW 文件 `hnsw_<name>.bin`，重启时优先 load 而非 rebuild | Qdrant / Faiss |
-| 9 | **范围 / 批量搜索** | ✅ | searchRange(distance_threshold) + searchBatch | Milvus / Faiss |
-| 10 | **REST 协议** | ✅ Qdrant 兼容 | create / get / delete / upsert / search / scroll / delete-by-filter | Qdrant 1.7+ |
-| 11 | **Spring Boot 装配** | ✅ | 一行依赖 + yml 配置 + 自动启动 REST 服务 | Spring Boot 生态 |
-| 12 | **全文检索 (FTS)** | ✅ BM25 | 倒排索引 + 中文 bigram 分词 + BM25 排序 | Elasticsearch |
-| 13 | **磁盘索引 (DiskANN)** | ✅ Vamana 图 | Beam Search + 动态图构建 + 磁盘持久化 | Microsoft DiskANN |
-| 14 | **gRPC 服务** | ✅ Milvus 兼容 | Builder 模式请求/响应 + Collection/Insert/Search/Drop 操作 | Milvus gRPC |
-| 15 | **OpenAPI 3.0** | ✅ 规范生成 | JSON/YAML 自动生成 + REST endpoint 定义 + Schema 定义 | OpenAPI Initiative |
-| 16 | **多租户隔离** | ✅ Namespace | 权限位掩码 (READ/WRITE/ADMIN) + 配额管理 + 用户授权 | 多租户架构 |
-| 17 | **分布式模式** | ✅ ClusterManager | 一致性哈希路由 + 心跳健康检查 + 故障转移 | 一致性哈希论文 |
-
-## 快速开始
-
-### Maven 依赖
+### Spring Boot 应用
 
 ```xml
 <dependency>
     <groupId>io.github.yuku123</groupId>
     <artifactId>z-vector-spring-boot-starter</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.5</version>
 </dependency>
+<!-- storage-type=persistent 时还要显式补一件：io.github.yuku123:z-vector-storage:1.0.5 -->
 ```
 
-### Spring Boot application.yml
+配置面前缀**只有 `zvector`**（下面是 `ZVectorProperties` 的全部键；`z.vector.enabled/mode/host/port`
+那一族在代码里不存在，Spring Boot 会连警告都不打地静默忽略）：
 
 ```yaml
 zvector:
-  storage-type: persistent       # in-memory / persistent
-  data-dir: /data/zvector
+  storage-type: in-memory     # in-memory（默认）/ persistent
+  data-dir: /tmp/zvector      # 默认 /tmp/zvector，仅 persistent 时用到
   server:
-    port: 6334                   # REST API 端口（0 = 不启动）
-    auto-start: true             # false = 不创建 REST 服务
+    port: 6334                # 嵌入式 Qdrant 形态 REST 端口；0 = 不启动 REST
+    auto-start: true          # false = 连 REST 生命周期 Bean 都不建
   default-index:
-    type: HNSW
+    type: HNSW                # 留空 = 不覆盖，走 store 内置的 FLAT
     params:
       M: 16
       efConstruction: 200
 ```
 
-### Java 代码使用
+`default-index` 只管"没说用哪种索引"的那一支（`createCollection(name, dim, metric)`）；显式传了
+`IndexType` 的调用照本宣科。写一个不存在的索引名会让应用启动失败（`IllegalStateException` 里点名
+`zvector.default-index.type`），不会静默退回 FLAT。
 
-```java
-@SpringBootApplication
-public class MyApp {
-    public static void main(String[] args) {
-        SpringApplication.run(MyApp.class, args);
-    }
-
-    @Autowired VectorStore vectorStore;
-
-    @PostConstruct
-    void init() {
-        // 创建 HNSW 集合（768 维、COSINE 距离）
-        vectorStore.createCollection("docs", 768, DistanceMetric.COSINE,
-                IndexType.HNSW, null);
-
-        // 写入点（带 payload）
-        vectorStore.upsert("docs", new VectorPoint("doc-1",
-                new float[768], Map.of("lang", "zh")));
-
-        // 纯 ANN 检索
-        List<SearchResult> hits = vectorStore.search("docs",
-                new float[768], 10, Filter.eq("lang", "zh"));
-    }
-}
-```
-
-### REST API 调用（Qdrant 兼容）
+### 独立 server（REST，默认 6333）
 
 ```bash
-# 创建集合
-curl -X PUT http://localhost:6334/collections/docs \
-  -H "Content-Type: application/json" \
-  -d '{"dimension": 768, "metric": "COSINE", "index_type": "HNSW"}'
-
-# Upsert 向量
-curl -X PUT http://localhost:6334/collections/docs/points \
-  -H "Content-Type: application/json" \
-  -d '{"points": [
-    {"id": "doc-1", "vector": [0.1, 0.2, ...], "payload": {"lang": "zh"}},
-    {"id": "doc-2", "vector": [0.3, 0.4, ...], "payload": {"lang": "en"}}
-  ]}'
-
-# ANN 搜索 + filter
-curl -X POST http://localhost:6334/collections/docs/points/search \
-  -H "Content-Type: application/json" \
-  -d '{"vector": [0.1, 0.2, ...], "limit": 10, "filter": {"lang": "zh"}}'
+mvn -pl z-vector-server -am clean package -DskipTests
+ZVECTOR_DATA_DIR=/tmp/zvector java -jar z-vector-server/target/z-vector-server-1.0.5.jar
+curl -s localhost:6333/health
+# {"status":"ok","version":"1.0.5","collections":0}
 ```
 
-### 嵌入式（不依赖 Spring）
+`z-vector-server` **不是 Spring Boot 应用**，是裸 `main()` + JDK HttpServer（shade 出的 fat jar；
+瘦身后那份叫 `original-z-vector-server-<ver>.jar`）。旋钮只有环境变量
+（`--z.vector.port` 一类命令行属性它压根不解析）：
 
-```java
-// 内存版（最快）
-try (VectorStore store = new InMemoryVectorStore()) {
-    store.createCollection("docs", 768, DistanceMetric.COSINE);
-    store.upsertBatch("docs", docs);
-    List<SearchResult> hits = store.search("docs", query, 10, null);
-}
+| 环境变量 | 默认 | 说明 |
+|----------|------|------|
+| `ZVECTOR_PORT` | `6333` | HTTP 监听端口；`0` = 让内核挑一个空闲端口（测试用）；越界直接启动失败 |
+| `ZVECTOR_DATA_DIR` | `/data/zvector` | 数据目录（WAL + Snapshot + HNSW 图） |
+| `ZVECTOR_DEFAULT_INDEX` | 空 | 不带 `index_type` 的建集合请求用哪个索引：`FLAT` / `HNSW` / `IVF`，大小写不敏感；空串 = 不覆盖，走内置 `FLAT` |
+| `ZVECTOR_INDEX_PARAMS` | 空 | 上面那个索引的参数，一个 JSON 对象，例如 `{"M":16,"ef_construction":200}` |
 
-// 持久化版（崩溃安全 + HNSW 持久化）
-try (VectorStore store = new PersistentVectorStore("/data/zvec")) {
-    store.createCollection("docs", 768, DistanceMetric.COSINE, IndexType.HNSW, null);
-    store.upsertBatch("docs", docs);
-    store.buildIndex("docs");
-    store.flush("docs");   // 写 snapshot + 保存 HNSW 图
-} // 重启后 HNSW 直接从磁盘加载，不重建
-```
+拼错不降级：`ZVECTOR_DEFAULT_INDEX=SPARSE` 或 `ZVECTOR_INDEX_PARAMS='M=7'` 会让进程启动即失败，
+日志里点名是哪一个变量。`/health` 的 `version` 来自构建期资源过滤写进 `build-info.properties` 的
+`${project.version}`，不是手抄字面量。SIGTERM 走 shutdown hook：`server.stop` + 关线程池 + `store.close()`。
 
-### 高级能力：量化
+---
 
-```java
-VectorCollection schema = new VectorCollection("docs", 768, DistanceMetric.COSINE,
-        IndexType.HNSW, Collections.singletonMap("M", 16));
-schema.setQuantization(QuantizationType.INT8);  // 4 倍内存压缩
-Collection coll = new Collection(schema);
-coll.upsertBatch(docs);
-coll.buildIndex();
-// 量化器由 Collection 自动装配到索引，搜索时走量化路径
-```
+## 🔌 API 一览
 
-### 高级能力：混合检索
+仓里有**两台语义不同的 HTTP server**，别把字段混用（`OpenApiSpec` 头部也专门写了这条警告）。
 
-```java
-HybridSearch hybrid = new HybridSearch();
-List<SearchChannel> channels = Arrays.asList(
-        SearchChannel.vector(query, 50, null, 0.7),   // 70% 向量召回
-        SearchChannel.bm25(keywords, 50, null, 0.3)  // 30% 文本召回
-);
-List<SearchResult> hits = hybrid.rrf(channels, topK);  // 或 hybrid.weighted(...)
-```
+### A. 独立 server `z-vector-server`（默认 6333，扁平路径，集合名走 body）
 
-## 索引选型指南
+| 方法 | 路径 | 请求体 / 说明 |
+|------|------|---------------|
+| `GET` | `/health` | `{status, version, collections}` |
+| `GET` | `/collections` | 集合名列表 |
+| `PUT` / `POST` | `/collections` | `{name, dimensions, metric?, index_type?, index_params?}`：`name` 必填、`dimensions` 必填且为正整数（`4` 与 `4.0` 都收）、`metric` 默认 `COSINE`；响应**回读真正建出来的** `index_type` / `index_params` |
+| `POST` / `PUT` | `/points` | `{collection, points:[{id, vector, payload}]}` → `upsertBatch`，返回 `{status, upserted}` |
+| `POST` | `/search` | `{collection, vector, limit?}`（`limit` 默认 10）→ **这一台不做过滤**：调的是 `search(..., filter=null)`，写了 `filter` 也不生效 |
 
-| 数据规模 | 推荐索引 | 召回率 | 查询时延 | 备注 |
-|---|---|---|---|---|
-| < 10K | Flat | 100% | 毫秒级 | 简单可靠 |
-| 10K ~ 1M | **HNSW** (M=16, ef=200) | 99%+ | 毫秒级 | 持久化已支持 |
-| 1M ~ 10M | HNSW + 量化（INT8/PQ） | 95%+ | 毫秒级 | 内存降 4 倍 |
-| > 10M | IVF + PQ 量化 | 85%+ | 毫秒级 | 适合批检索 |
+其它方法（包括 `DELETE /collections`）一律 405；`IllegalArgumentException` / `VectorException`
+统一映射成 400，其它异常 500。
 
-## 性能基准（z-vector 本地测试）
+### B. Qdrant 形态 REST `QdrantRestServer`（starter 默认 6334，路径里带集合名）
 
-测试条件：JDK 25, M2 Mac mini, dim=32, N=1000, topK=10
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/collections` | 集合列表 |
+| `PUT` | `/collections/{name}` | 建集合：`dimension`（**可缺省，缺省 128**）、`metric`、`index_type`、`index_params`；响应回读真实 `dimension` / `metric` / `index_type` |
+| `GET` / `DELETE` | `/collections/{name}` | 取集合信息 / 删集合 |
+| `PUT` | `/collections/{name}/points` | 批量 upsert（**只认 PUT**） |
+| `GET` / `DELETE` | `/collections/{name}/points/{id}` | 取点 / 删点 |
+| `POST` | `/collections/{name}/points/search` | `{vector, limit?, filter?, build_index?}` → `{result:[{id, score, payload?}], status, time_ms}`（`time_ms` 恒为 0，是占位） |
+| `GET` | `/collections/{name}/points/count` | 点数 |
 
-| 索引 | QPS | 召回率 vs Flat |
-|---|---|---|
-| Flat (brute force) | 7,653 | 100% |
-| **HNSW (M=16)** | **15,214** | **99.20%** |
-| IVF (nlist=16) | 22,103 | 88.20% |
+这一台**没有 `/health`**（会路由到 404），也**没有 scroll / delete-by-filter**。
 
-> HNSW 相比 Flat 在 N=1000 下 QPS 提升 ~2×，且召回 99.2%，适合中等规模场景。
-> 大规模下应配合量化（INT8/PQ）进一步降低内存与时延。
+`filter` 的 JSON 语法（实测 `parseFilter` / `parseCombinator` / `parseCondition`）：
 
-## HNSW 持久化工作流
-
-```
-                  flush()/close()                  start-up (recover)
-                 ┌──────────────┐                ┌──────────────────┐
-   in-memory ──▶ │ 1. 写 snapshot│  ──▶ disk ──▶ │ 1. 读 snapshot    │
-   HnswIndex    │ 2. save HNSW  │                │ 2. replay WAL      │
-                │   to hnsw.bin │                │ 3. load HNSW if   │
-                └──────────────┘                │    exists (skip    │
-                                                 │    rebuild!)       │
-                                                 │ 4. rebuild fallback│
-                                                 └──────────────────┘
-```
-
-关键收益：**百万级数据集启动时间从分钟级降到秒级**。
-
-## 设计参考与复用
-
-| 开源项目 | 复用内容 | NAS 路径 |
-|---|---|---|
-| **zvec** (Alibaba) | 嵌入式架构设计 + ANN 算法栈 + WAL 设计 + 混合检索 | `/Volumes/personal_folder/学习/source-from-github/083_zvec/` |
-| **LanceDB** | 列存思想 + Manifest 持久化 + DataFusion 查询 | `/Volumes/personal_folder/学习/source-from-github/144_lancedb/` |
-| **Chroma** | 分层架构 + System Actor 运行时 + IndexProvider | `/Volumes/personal_folder/学习/source-from-github/319_chroma/` |
-| **Milvus** | 分布式协议参考 + 索引参数化 + PChannel 概念 | `/Volumes/personal_folder/学习/source-from-github/569_milvus/` |
-| **pgvector** | SQL 集成思路 + 索引简洁实现 | `/Volumes/personal_folder/学习/source-from-github/088_pgvector/` |
-| **Weaviate** | Go-based 向量数据库参考 + GraphQL 集成 + 混合检索思路 | `/Volumes/personal_folder/学习/source-from-github/317_weaviate/` |
-| **Faiss** | 量化算法（PQ/INT8）+ HNSW 实现参考 + 距离计算 | `/Volumes/personal_folder/学习/source-from-github/054_vector/` |
-
-## 与业界对比
-
-| 维度 | z-vector | Milvus | Qdrant | zvec | LanceDB |
-|---|---|---|---|---|---|
-| 架构 | in-process + 可持久化 | C/S 分布式 | C/S | in-process | in-process |
-| 部署 | 嵌入式 / Spring Boot | K8s | docker | pip install | pip install |
-| 语言 | **Java** | Go/Python | Rust | C++ + Python | Rust + Python |
-| Flat / HNSW / IVF / DiskANN | ✅ / ✅ / ✅ / ✅ | ✅ / ✅ / ✅ / ❌ | ✅ / ✅ / ❌ / ❌ | ✅ / ✅ / ✅ / ❌ | ✅ / ✅ / ✅ / ❌ |
-| 量化（PQ/INT8/BINARY） | ✅ 4 种 | ✅ | ✅ | ✅ | ✅ |
-| 混合检索（RRF） | ✅ | ✅ | ❌ | ✅ | ❌ |
-| 全文检索（FTS/BM25） | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Payload 倒排索引 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 范围索引 | ✅ | ✅ | ✅ | ✅ | ❌ |
-| HNSW 持久化 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 持久化 | WAL+Snapshot | WAL+ObjectStore | RocksDB+WAL | WAL+ForwardStore | Manifest+LSM |
-| 多租户（Namespace） | ✅ | ✅ | ✅ | ❌ | ❌ |
-| 分布式模式 | ✅ | ✅ | ✅ | ❌ | ❌ |
-| gRPC 服务 | ✅ | ✅ | ❌ | ❌ | ❌ |
-| Spring Boot | ✅ 一行集成 | 需客户端 | 需客户端 | ❌ | ❌ |
-| 多语言 SDK | Java | Python/Go/Java/JS/... | Python/JS/Go/Rust/.NET/Java | 5 语言 | 3 语言 |
-| License | Apache 2.0 | Apache 2.0 | Apache 2.0 | Apache 2.0 | Apache 2.0 |
-
-## 测试与构建
+- 组合子：`must` / `and`、`should` / `or`、`must_not`、`not`；同一对象里多个 key 隐式 AND
+- 条件：裸值等价于等值（`{"lang":"zh"}`）；对象形态支持 `eq, ne, gt, gte, lt, lte, in, nin, exists, contains`
+- 数值范围可写两项：`{"score":{"gte":0.2,"lte":0.6}}`；`{"exists":false}` 表示"该字段不存在"
+- 解析不出来一律 400，不会把"没筛过"当成结果发出去
 
 ```bash
-# 编译
-mvn compile
-
-# 运行所有测试（257 个）
-mvn test
-
-# 清理 + 全量构建
-mvn clean install
-
-# 跳测试打包
-mvn package -DskipTests
+# B 台（6334）
+curl -s -X PUT localhost:6334/collections/docs \
+  -d '{"dimension":4,"metric":"L2","index_type":"HNSW","index_params":{"M":7}}'
+curl -s -X PUT localhost:6334/collections/docs/points \
+  -d '{"points":[{"id":"d1","vector":[0.1,0.2,0.3,0.4],"payload":{"lang":"zh"}}]}'
+curl -s -X POST localhost:6334/collections/docs/points/search \
+  -d '{"vector":[0.1,0.2,0.3,0.4],"limit":3,"filter":{"lang":"zh"}}'
 ```
 
-### 测试矩阵
+---
 
-| 模块 | 测试类 | 测试数 | 覆盖范围 |
-|---|---|---|---|
-| api | FilterTest | 13 | 表达式过滤（EQ/GT/AND/OR/NOT/...） |
-| api/namespace | **NamespaceTest** | **9** | **多租户隔离 / 权限位掩码 / 配额管理** |
-| core/cluster | KMeansAdapterTest | 6 | z-util-ml KMeans 集成（高斯聚类 / 边界 / assignNearest） |
-| core/distance | DistanceTest | 14 | 4 种距离度量正确性 + 性能 |
-| core/index | HnswPersistenceTest | 5 | HNSW 图 save/load + roundtrip |
-| core/index | **DiskAnnIndexTest** | **8** | **DiskANN 磁盘索引 / Beam Search / save/load** |
-| core/index | IndexBenchmarkTest | 4 | Flat/HNSW/IVF 的 QPS + 召回 |
-| core/collection | InMemoryVectorStoreTest | 21 | 内存版 CRUD + 搜索 + 索引切换 |
-| core/search | HybridSearchTest | 6 | RRF + Weighted 融合 |
-| core/filter | PayloadIndexTest | 8 | 倒排 + 数值范围 |
-| core/fts | **FTSIndexTest** | **12** | **全文检索 / BM25 排序 / 中文 bigram 分词** |
-| core/quantizer | QuantizerTest | 12 | FP16/INT8/PQ/BINARY |
-| storage/wal | WalFileTest | 6 | WAL 写入 + 重放 |
-| storage/wal | AsyncWalFileTest | 9 | Group Commit / 并发 / 顺序保证 / 关闭 drain |
-| storage/wal | **WalFileRotationTest** | **5** | **段轮转 / 重放跨段顺序 / truncate 清理 / E2E 恢复** |
-| storage/bloom | BloomFilterTest | 9 | 误判率 / 无假阴性 / 序列化 / MurmurHash3 |
-| storage/page | PageStoreTest | 10 | 读写 / 空洞检测 / CRC 校验 / 大 payload |
-| storage/page | **PageStoreAdvancedTest** | **8** | **free slot 复用 / compact 缩容 / 并发 mmap 读 / 1000轮次写+free 压力** |
-| storage/page | MmapPageReaderTest | 5 | mmap 读写 / 写后失效 / 性能 ≥ 2x |
-| storage/buffer | BufferPoolTest | 9 | LRU 命中/驱逐 / dirty 写回 |
-| storage/snapshot | PageSnapshotTest | 7 | 增量 manifest 写/读/loadInto/magic 校验 |
-| storage/snapshot | **StorageBenchmarkTest** | **2** | **v1 vs v2 性能 + 文件大小对比** |
-| storage/engine | StorageEngineTest | 10 | 端到端：bloom + page + async WAL 集成 |
-| storage/distributed | **ClusterManagerTest** | **10** | **分布式集群 / 一致性哈希 / 心跳健康检查** |
-| storage | PersistentVectorStoreTest | 21 | 持久化 + HNSW + v2 集成 + 崩溃恢复 + 并发压测 + 5000 点大数据量 |
-| storage | EdgeCasesAndLifecycleTest | 11 | 进程崩溃模拟 / 大 payload / checkpoint 截断 / 并发安全 / CRC 损坏检测 |
-| storage | **MemoryStabilityTest** | **4** | **100K upsert（41K ops/s）/ 5000 delete+restart / 1000 次重启循环 / WAL rotate 压力** |
-| protocol | ProtocolSpecTest | 3 | Milvus 协议 Spec + **OpenAPI 3.0 规范生成** |
-| grpc-server | QdrantRestServerTest | 7 | Qdrant REST 全流程 |
-| grpc-server | **VectorServiceGrpcTest** | **7** | **Milvus gRPC 服务 / Collection CRUD / 向量搜索** |
-| starter | ZVectorStarterIntegrationTest | 3 | Spring Boot 自动装配 |
-| **合计** | | **257** | |
+## 💾 本地存储（z-vector-storage 实测件清单）
 
-## 版本历史
+`PersistentVectorStore(dataDir)` 的默认档位是 `(checkpointInterval=1000, useStorageEngine=true)`，
+`useStorageEngine=false` 退回同步 `WalFile`。`StorageEngine` 默认：Bloom 期望元素 `100_000` /
+目标假阳率 `0.01`（MurmurHash3-x64-128 + Kirsch-Mitzenmacher 双哈希，无假阴性）、BufferPool `256` 页
+（LRU，暴露 `hits / misses / evictions / hitRate`）、`AsyncWalFile` Group Commit（64 条 / 10ms 满足其一
+即整批一次 fsync，暴露 `totalAppended / totalFlushed / totalBatches / queueSize`）。页大小 64KB，
+header 17B（magic `ZVP1`）+ 尾部 4B CRC32。**这些都在 Java 构造器上，不在 yml 里**：
 
-- **v1.0.0-SNAPSHOT** (2026-09-08)
-  - **v5 功能增强：FTS / DiskANN / gRPC / OpenAPI / 多租户 / 分布式**
-    - **FTS 全文检索**：`FTSIndex` 倒排索引 + `SimpleTokenizer` 中文 bigram 分词 + `BM25Scorer` Okapi BM25 排序
-    - **DiskANN 磁盘索引**：`DiskAnnIndex` Vamana 图 + Beam Search + 磁盘持久化（save/load）
-    - **Milvus gRPC 服务**：`VectorServiceGrpc` 纯 Java 实现，Builder 模式请求/响应，兼容 protobuf 风格
-    - **OpenAPI 3.0 规范**：`OpenApiSpec` JSON/YAML 自动生成 + REST endpoint + Schema 定义
-    - **多租户隔离**：`Namespace` + `NamespaceManager`，权限位掩码 (READ/WRITE/ADMIN) + 配额管理
-    - **分布式模式**：`ClusterManager` 一致性哈希路由 + 心跳健康检查 + 故障转移
-    - **Bug 修复**：DiskAnnIndex Beam Search 入口点未加入结果集（搜索返回 0 结果）；SimpleTokenizer 中文连续字符被匹配为单个大 token（搜索"编程"无法命中）
-    - 52 个新测试（Namespace 9 + FTS 12 + DiskANN 8 + ClusterManager 10 + VectorServiceGrpc 7 + ProtocolSpec 3 + 原有修复），合计 **257** 个全部通过
-- **v1.0.0-SNAPSHOT** (2026-09-08)
-  - **v4 增强：Compaction + WAL Rotate + Free Page + 并发测试 + 内存稳定性**
-    - `PageStore.freePage()` + `compact()`：RocksDB/SQLite VACUUM 风格空洞消除；文件缩容
-    - `WalFile.rotate()`：RocksDB log rotation 思路，超过 16MB 自动 rotate；重启自动扫描恢复
-    - MmapPageReader `duplicate()` 线程安全修复
-    - AsyncWalFile `flush()` 即使 closed 仍等待 pending（修复49/50 bug）
-    - 27 个新测试（PageStoreAdvanced 8 + WalFileRotation 5 + MemoryStability 4 - 0 + 原有修复），合计 **205** 个全部通过
-- **v1.0.0-SNAPSHOT** (2026-09-08)
-  - **v3 增强：mmap + HybridSnapshot + 全面测试**
-    - `MmapPageReader`：PageStore.useMmap(true) 启用 mmap 读，~2x 加速（macOS 实测）
-    - `HybridSnapshot`：v2 page-based + v1 JSON 自动 fallback；`PointPageCodec` 二进制点编码（替换 Jackson，启动 ~2-3x 加速，磁盘 ~50%）
-    - `createSnapshot()` 已切换到 `HybridSnapshot.writeV2()`
-    - 17 个新测试（MmapPageReaderTest 5 + StorageBenchmarkTest 2 + EdgeCasesAndLifecycleTest 11 - 1 = 17）
-    - 合计 **201** 个测试全部通过
-- **v1.0.0-SNAPSHOT** (2026-09-08)
-  - **v2 集成到 PersistentVectorStore**：默认启用 `StorageEngine`（AsyncWal + Bloom + BufferPool + PageStore），所有 upsert/delete/createCollection 自动走异步 WAL + markBloom；提供 `useStorageEngine=false` 兼容开关
-  - **`PageSnapshot`（增量 snapshot）**：新增 `psnap_meta.bin` manifest，只持久化变更页；7 个测试覆盖
-  - **崩溃恢复 / 压测**：新增 `crashRecoveryAfterUnflushedUpserts` / `snapshotRebuiltFromWalAfterCheckpoint` / `concurrentUpsertUnderLoad`（8 线程 × 250 条）/ `largeDatasetStress`（5000 点 + 100 次搜索）
-  - 合计 **183** 个测试全部通过
-- **v1.0.0-SNAPSHOT** (2026-09-08)
-  - **本地存储 v2**：新增 `Page / PageStore / BufferPool / BloomFilter / AsyncWalFile / StorageEngine`
-    - PageStore：64KB 定长页 + CRC32 + 随机寻址
-    - BufferPool：LRU 缓存（默认 256 页 = 16MB），hit/miss/eviction 指标
-    - BloomFilter：murmur3-128 + Kirsch 双 hash；100K 容量 1% 误判率约 96KB
-    - AsyncWalFile：Group Commit（64 条 / 10ms），后台 daemon 线程批量 fsync
-    - StorageEngine：统一门面 + 端到端指标
-  - 新增 47 个测试（Bloom/Page/Buffer/AsyncWal/StorageEngine），合计 169 个
-- **v1.0.0-SNAPSHOT** (2026-09-08)
-  - **z-util 复用**：删除自研 K-means（-120 行），改用 `z-util-ml.KMeans`（通过 `KMeansAdapter` 桥接 float[][] ↔ NdArray）；`HnswPersistence` 改用 `z-util-core.FileUtil.mkdirs`
-  - 新增 `core/cluster/KMeansAdapter` + 6 个集成测试（122 个测试全部通过）
-  - 显式排除 `log4j-slf4j2-impl` 以兼容 Spring Boot 的 `log4j-to-slf4j`
-- **v1.0.0-SNAPSHOT** (2026-09-07)
-  - **HNSW 持久化**：`hnsw_<name>.bin` 二进制存储 + 启动优先 load（替代 rebuild）
-  - **混合检索**：RRF + Weighted 双融合策略
-  - **量化**：FP16 / INT8 / PQ（K-means）/ BINARY 四种
-  - **Payload 倒排 + 范围索引**：ExactIndex（HashMap）+ NumericIndex（TreeMap）
-  - **性能基准**：Flat/HNSW/IVF 三方 QPS + 召回对比
-  - 6 个模块：api / core / storage / protocol / grpc-server / spring-boot-starter
-  - 116 个单元/集成测试，全部通过（BUILD SUCCESS）
+```java
+VectorStore store = new PersistentVectorStore("/data/zvector", 1000, true);
+StorageEngine engine = new StorageEngine("/data/zvector", wal, 100_000L, 0.01, 256);
+```
 
-## Roadmap
+```
+<dataDir>/
+├── wal.log                      # 当前 WAL 段：[magic4][op1][ts8][nameLen2][name][payloadLen4][payload][crc4]
+├── wal_<n>.log                  # rotate 出来的历史段（默认段上限 16MB），重放按 n 升序
+├── snapshot.bin                 # v1 全量快照：Jackson JSON 装进带长度的二信封 + CRC
+├── psnap_meta.bin               # v2 增量 page manifest（PageSnapshot.META_FILE）
+├── psnap_<cid>_<type>_<no>.bin  # v2 单 page 快照
+├── hnsw_<collection>.bin        # HNSW 图，按集合
+└── pages_<collectionId>.pgs     # 分页存储，每集合一个文件（± 一对 collectionId 不再共用同一份）
+```
 
-- [x] ✅ 量化（FP16/INT8/PQ/BINARY）
-- [x] ✅ 混合检索（RRF + Weighted）
-- [x] ✅ Payload 倒排 + 范围索引
-- [x] ✅ HNSW 持久化（启动加速）
-- [x] ✅ Milvus gRPC stub（纯 Java 实现，Builder 模式请求/响应，兼容 protobuf 风格）
-- [x] ✅ FTS 全文检索（中文 bigram 分词 + BM25 排序 + 倒排索引）
-- [x] ✅ 磁盘索引（DiskANN / Vamana 图 + Beam Search）
-- [x] ✅ 分布式模式（ClusterManager + 一致性哈希 + 心跳健康检查）
-- [x] ✅ OpenAPI 3.0 规范（JSON/YAML 生成，可用于 SDK 代码生成）
-- [x] ✅ 多租户隔离（Namespace + 权限位掩码 + 配额管理）
+读路径优先 v2 `PageSnapshot`，缺失时回退 v1 `snapshot.bin` 并在下次 checkpoint 迁移；
+mmap 冷读要显式 `PageStore.useMmap(true)`（默认关，写后自动失效旧视图）。
+`ClusterManager`（`storage/distributed`）**不参与**以上任何一条：它只是内存 Map，没有网络。
 
-## 维护
+---
 
-- 模块维护人：z-vector 团队
-- 反馈渠道：GitLab Issues
-- 文档：本 README + 代码注释（JavaDoc）
+## 🧪 测试
 
+```bash
+mvn clean test                       # 全量
+mvn -o -fae clean test               # 离线 + 失败继续（_doc 里跨 JDK 对账用的就是这条）
+mvn -pl z-vector-storage -am test    # 单模块（务必带 -am）
+```
+
+必须带 `clean`：陈旧的 surefire 报告会虚报测试类数（`_doc` 的登记原话）。用例不依赖任何外部服务，
+读写都在临时目录里；Java 8 线还受 flatten 版本闸（P5）与 `jdk9-plus-release-gate` 保护。
+
+静态清点（`rg -c "@Test"` + 文件枚举实测。**本次文档任务不跑 `mvn`，故只报件数、不声明通过数**；
+历史上最近一次全量对账读数在 `_doc/003_待办事项/feature001_hnsw_v2/TASK.md` §4）：
+
+| 模块 | 测试类 | `@Test` 数 | 主要覆盖 |
+|------|--------|-----------|----------|
+| z-vector-api | 4 | 30 | Filter 表达式、枚举、POJO、Namespace |
+| z-vector-core | 21 | 170 | 4 种距离、Flat/HNSW/IVF、HNSW 图形状与持久化、PayloadIndex 快路径、量化器、DiskAnnIndex、FTS、HybridSearch、KMeansAdapter |
+| z-vector-storage | 22 | 171 | WAL（group commit / rotate / 崩溃恢复）、PageStore / BufferPool / Bloom、PageSnapshot / PointPageCodec、mmap 生命周期、PersistentVectorStore、StorageEngine |
+| z-vector-protocol | 1 | 6 | ProtocolSpec / OpenAPI 生成 |
+| z-vector-grpc-server | 5 | 33 | `QdrantRestServerTest`、`QdrantRestFilterContractTest`、`QdrantRestIndexContractTest`、`QdrantRestServerPortLifecycleTest`、`OpenApiSpecRoutingTest` |
+| z-vector-spring-boot-starter | 3 | 18 | 自动装配 + REST 生命周期 |
+| z-vector-server | 3 | 30 | 独立 server 索引契约 + POM 版本契约（P1/P2/P3/P5） |
+| **合计** | **59** | **458** | |
+
+注意 `VectorServiceGrpc` **一条测试都没有**（旧 README 记的 `VectorServiceGrpcTest 7 条` 已不在树上），
+这与"它零调用方"是同一件事的两面。
+
+---
+
+## 🐳 部署
+
+```bash
+# 唯一可复现的一条路：独立 server fat jar → 镜像（build context 就是 z-vector-server 目录）
+mvn -pl z-vector-server -am clean package -DskipTests
+docker build -f z-vector-server/Dockerfile -t z-vector:local z-vector-server
+docker run -d -p 6333:6333 -e ZVECTOR_DATA_DIR=/data/zvector \
+  -e ZVECTOR_DEFAULT_INDEX=HNSW -e ZVECTOR_INDEX_PARAMS='{"M":16,"efConstruction":200}' \
+  z-vector:local
+```
+
+- [`z-vector-server/Dockerfile`](z-vector-server/Dockerfile)：`eclipse-temurin:8-jre`、非 root uid `10001`、
+  `EXPOSE 6333`、`HEALTHCHECK` 打 `/health`、JVM 参数变量名是 **`JAVA_OPTS`**、jar 用 glob
+  （`COPY target/z-vector-server-*.jar`）不写死版本号；数据目录 `/data/zvector`。
+- [`Dockerfile`](Dockerfile)（仓根，多阶段）实测**打不出可运行镜像**，别照它部署：构建上下文只 COPY 了
+  api / core / storage / protocol / grpc-server 五个模块（**没有 `z-vector-server`**），最后 `COPY` 的却是
+  `z-vector-grpc-server` 的普通 jar —— 该模块没有任何打包插件、MANIFEST 里没有 `Main-Class`，
+  `java -jar` 直接 "no main manifest attribute"；`EXPOSE 9090` 也没有任何进程监听。
+  它头部注释里"parent 是 `com.zifang:z-opc:1.0.0-SNAPSHOT` 所以换台机器读不动 pom"那一条**已过期**
+  （2026-09-29 parent 已迁到 `z-boot-parent:1.0.21`，repo1 实测 200），但上面两条依旧成立。
+  这一份怎么修已记进 `_doc/003_待办事项/feature001_hnsw_v2/TASK.md` 等拍板。
+- 发布：[`_doc/003_script/deploy_maven_center.sh`](_doc/003_script/deploy_maven_center.sh)
+  子命令 `publish` / `verify` / `gpg-init` / `readme` / `help`；凭证只从被 `.gitignore` 排除的 `.env`
+  读取（键名 `CENTRAL_USERNAME`、`CENTRAL_TOKEN`、`CENTRAL_GPG_PASSPHRASE`，密钥环走
+  `GNUPGHOME=./.gnupg`）。本 README 不含任何凭证值。
+- 仓内**没有** `docker-compose.yml`、`deploy/`、`k8s/`、`Makefile`。旧 README 里的 compose 片段与
+  StatefulSet YAML 是手抄示例（含 `ghcr.io/z-opc-foundation/z-vector:1.0.1` 镜像地址，本机无法证实其在位，
+  且 1.0.1 早已落后两个发布件），已从本文件撤下；k8s 清单待 `_doc/002_deploy/` 有实物后再写。
+
+---
+
+## 📄 License
+
+MIT —— 见根 [`LICENSE`](LICENSE)（`Copyright (c) 2026 z-opc-foundation`），根 POM `<licenses>` 同为 MIT License。
+
+---
 
 ## 文档目录
 
-本项目文档统一收口在 `_doc/` 下:
+本项目文档统一收口在 `_doc/` 下：
 
-- [`_doc/003_script/`](_doc/003_script/) — 运维脚本:
-  - [`deploy_maven_center.sh`](_doc/003_script/deploy_maven_center.sh)
+- [`_doc/003_script/`](_doc/003_script/) — 运维脚本（本仓唯一有实文件的分类目录）:
+  - [`deploy_maven_center.sh`](_doc/003_script/deploy_maven_center.sh) — Maven Central 发布 / 校验 / GPG 初始化
+- [`_doc/003_待办事项/`](_doc/003_待办事项/) — 待办与收口登记:
+  - [`feature001_hnsw_v2/TASK.md`](_doc/003_待办事项/feature001_hnsw_v2/TASK.md) — #20「版本号单源」收口登记 +
+    四把尺（P1/P2/P3/P5）与 13 支变异电池读数 + 跨 JDK 对账。其 §5.4 记的「gRPC 广告与端口三个互相
+    不打照面」「OpenApiSpec 生成了但没有端点服务它」两条，正是本 README「未接入」一节的上游依据。
+    注意该目录虽名为 `feature001_hnsw_v2`，里面**不是** HNSW v2 的方案本体（文首已自注这次错位）
+- [`_doc/001_arch/`](_doc/001_arch/) — 目前为空目录，暂无架构文档
+- [`_doc/002_deploy/`](_doc/002_deploy/) — 目前为空目录，暂无部署文档
+- [`_doc/004_skill/`](_doc/004_skill/) — 目前为空目录，暂无 skill 定义
 
-各文档详细说明见各子目录。
+`deploy_maven_center.sh` 注释里指向的 `发布指引.md` 在本仓不存在（脚本自身是该目录里唯一的实体）。
+
+_Maintained by the z-opc-foundation organization._
