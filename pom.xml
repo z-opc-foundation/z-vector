@@ -235,6 +235,23 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
+    <dependencies>
+    <!-- 全仓统一测试台（parent <dependencies> 直供，所有子模块自动继承，
+         子模块一律不再各自声明 junit；版本由根 DM / 地板 junit-bom 统一下发）：
+           * junit-jupiter        — JUnit 5 新测试（API + 引擎）
+           * junit-vintage-engine — 老 JUnit 4 测试（org.junit.Test）跑在 JUnit 5 平台上 -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.vintage</groupId>
+            <artifactId>junit-vintage-engine</artifactId>
+            <scope>test</scope>
+            <version>${junit.version}</version>
+        </dependency>
+    </dependencies>
 
     <build>
         <pluginManagement>
