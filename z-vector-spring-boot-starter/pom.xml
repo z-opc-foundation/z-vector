@@ -88,12 +88,8 @@
             <artifactId>slf4j-api</artifactId>
             <version>2.0.13</version>
         </dependency>
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-simple</artifactId>
-            <version>2.0.13</version>
-            <scope>runtime</scope>
-        </dependency>
+        <!-- 原 runtime 域 slf4j-simple 已删（2026-10-02）：本模块测试零用 slf4j，库件不替应用
+             写日志栈——spring-boot-starter 把日志栈选型交给消费方应用决定。 -->
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -98,11 +98,14 @@
             <artifactId>slf4j-api</artifactId>
             <version>2.0.13</version>
         </dependency>
+        <!-- 绑定（provider）从 runtime 降 test 域（2026-10-02）：库件不得把 slf4j 绑定以
+             runtime 域塞给消费方（runtime = 强制进入消费方应用运行时类路径）——这是「应用层勿
+              由库件替它写日志栈」原则的 runtime 版本同款。本模块测试 1 个文件用 slf4j，test 域自给。 -->
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
             <version>2.0.13</version>
-            <scope>runtime</scope>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 </project>

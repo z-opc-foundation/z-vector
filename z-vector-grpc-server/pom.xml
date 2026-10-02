@@ -76,12 +76,7 @@
             <artifactId>slf4j-api</artifactId>
             <version>2.0.13</version>
         </dependency>
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-simple</artifactId>
-            <version>2.0.13</version>
-            <scope>runtime</scope>
-        </dependency>
+        <!-- 原 runtime 域 slf4j-simple 已删（2026-10-02）：grpc-server 测试零用 slf4j，纯漏。 -->
 
 
         <!-- 只在测试里用：OpenApiSpecRoutingTest 拿这台 server 的真实路由去核对外广告的
