@@ -297,6 +297,22 @@ StorageEngine engine = new StorageEngine("/data/zvector", wal, 100_000L, 0.01, 2
 mmap 冷读要显式 `PageStore.useMmap(true)`（默认关，写后自动失效旧视图）。
 `ClusterManager`（`storage/distributed`）**不参与**以上任何一条：它只是内存 Map，没有网络。
 
+**集合名没有任何字符校验，而它会直接参与磁盘路径拼接**——`hnsw_<collection>.bin` 是
+`Paths.get(dataDir, "hnsw_" + name + ".bin")`，`deleteCollection` 还会对它无条件
+`Files.deleteIfExists`。集合名从 `QdrantRestServer` 的 REST 端点与 `VectorServiceGrpc`
+**客户端原样透传**进来，那台 REST server 没有鉴权。
+
+照实说：**当前实测越不了界，但挡住的不是校验，是那个文件名前缀**。`hnsw_` 把第一段粘成了
+`hnsw_..`——一个普通目录名而不是 `..`；OS 逐段解析路径必须先进入该目录才谈得上处理后面的
+`..`，而全仓没有任何 API 能在 `dataDir` 下造出那个目录（`PageStore` 的文件名用的是
+`collectionName.hashCode()` 这个 int，`WalFile` 只对 `dataDir` 本身建目录）。
+
+`CollectionNamePathEscapeTest` 把这条边界钉成护栏：**把 `hnsw_` 前缀摘掉，受害文件真的会被删**
+（变异实测 `expected: <true> but was: <false>`）。若将来有人"简化"这段拼接、
+改成先 `normalize()` 再拼、或引入能按名字建目录的路径，那道测试就会红。
+补一道显式的集合名白名单校验（禁 `/` 与 `..`）能把偶然安全变成真安全，属防御纵深，
+但那会改变 API 行为（现在能用的某些名字会被拒），已报给用户，未擅自加。
+
 ---
 
 ## 🧪 测试
