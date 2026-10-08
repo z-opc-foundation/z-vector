@@ -58,7 +58,7 @@
 | **多租户 Namespace** | `api/namespace/{Namespace,NamespaceManager}`（权限位掩码 + 配额）只被 `NamespaceTest` 引用；`VectorStore` 每个方法签名里都没有 namespace 参数 |
 | **集群模式（"基于 etcd 的元数据协调 + shard 分片"）** | `storage/distributed/ClusterManager` 是一个纯 `ConcurrentHashMap` 记账对象：仓内 grep 不到 etcd / zookeeper / socket / HTTP 客户端，只有 `ClusterManagerTest` 用它。全仓没有网络通信实现 |
 | **REST 的 scroll / delete-by-filter** | `QdrantRestServer` 路由表里没有这两条（`scroll`、`points/delete` 无命中）；`/collections/{name}/points` 只认 `PUT`（upsert） |
-| **可视化控制台 / 前端镜像** | 仓内没有 `_frontend/`、`console/` 或任何 JS 资产；`z-vector-console` 镜像无从证实 |
+| **可视化控制台 / 前端** | `_frontend/` 阶段一（feature001）已接入：React 19 + Vite 6 + AntD 6，分开发部署（vite dev proxy → :6333），文档与快速开始见 [_frontend/README.md](_frontend/README.md)。一体化部署（server 自托管 dist）作阶段二 backlog |
 | **示例里的 `Map.of` / `List.of` / `.toList()`** | 本仓 target 是 Java 8，这些 Java 9+ API 在 `-release 8` 闸下当场编译失败（commit `03ea768` 就是把它变成真闸）；旧 README 的示例因此**跑不通**，本文件示例已改成 Java 8 写法 |
 
 ---
@@ -89,7 +89,10 @@ z-vector/
 ```
 
 依赖方向（逐个模块 POM 实测）：`api ← core ← storage`、`api ← core ← grpc-server ← starter`、
-`server → core + storage`，`protocol` **谁也不引**（只在 `grpc-server` 的测试里以 `test` scope 出现）。
+`server → core + storage + grpc-server`，`protocol` **谁也不引**（只在 `grpc-server` 的测试里以 `test` scope 出现）。
+注意 feature001 之后 `z-vector-server` **直接依赖 `z-vector-grpc-server`** —— 独立 server 与内嵌
+starter 共享同一份 Qdrant 风格 REST（路由表定义只有一份），OpenApiSpec 与真实路由形状不再分裂。
+具体路由见 [`_doc/001_feature/001_管理台前端/feature001.md`](_doc/001_feature/001_管理台前端/feature001.md) §4.1。
 一个容易踩的点：starter **不依赖 `z-vector-storage`** —— `zvector.storage-type: persistent` 是靠
 `Class.forName("com.zifang.z.vector.storage.PersistentVectorStore")` 反射装配的，缺件时只 `log.warn`
 并退回 `InMemoryVectorStore` ⇒ 要持久化必须自己额外引 `z-vector-storage`。
@@ -386,6 +389,7 @@ MIT —— 见根 [`LICENSE`](LICENSE)（`Copyright (c) 2026 z-opc-foundation`�
 
 本项目文档统一收口在 `_doc/` 下：
 
+- [`_doc/001_feature/001_管理台前端/feature001.md`](_doc/001_feature/001_管理台前端/feature001.md) — feature001 规格：后端 REST 统一 + `/_frontend/` 管理台（React 19 + Vite 6 + AntD 6）
 - [`_doc/003_script/`](_doc/003_script/) — 运维脚本（本仓唯一有实文件的分类目录）:
   - [`deploy_maven_center.sh`](_doc/003_script/deploy_maven_center.sh) — Maven Central 发布 / 校验 / GPG 初始化
 - [`_doc/007_backlog/`](_doc/007_backlog/) — 待办与收口登记:

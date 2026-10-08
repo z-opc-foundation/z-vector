@@ -55,6 +55,16 @@
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector-storage</artifactId>
         </dependency>
+        <!-- 独立 server 与内嵌 starter 共用同一份 Qdrant 风格 REST：以前是两条手写分支
+             （server 自创 4 条扁平路由 /collections,/points,/search + QdrantRestServer 7 条），
+             客户端跟任一边写都会在另一边 404。feature001 之后统一由 QdrantRestServer.handler()
+             暴露路由入口，start() 里最长前缀挂载 /health、/__instance、根上下文。
+             注意本模块名 grpc-server 名字与内容不符（实为 Qdrant REST，零 gRPC 依赖），
+             README「未接入」段已说明，这里不再重复。 -->
+        <dependency>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-vector-grpc-server</artifactId>
+        </dependency>
         <!-- jackson-databind 的 <version>2.18.6</version> 已删：版本改由父链的 jackson-bom
              （面值 2.18.6，与原字面量相同）下发。兄弟模块不写 version 由聚合 pom 的
              ${project.version} 条目兜住，见聚合 pom 的 dependencyManagement 注释。 -->

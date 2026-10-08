@@ -2,6 +2,7 @@ package com.zifang.z.vector.grpc;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import com.zifang.z.vector.api.DistanceMetric;
 import com.zifang.z.vector.api.Filter;
@@ -136,6 +137,19 @@ public class QdrantRestServer {
 
     public VectorStore getStore() { return store; }
 
+    /**
+     * 把路由分发作为 {@link HttpHandler} 暴露出来，让 {@code z-vector-server} 独立 server
+     * 能把它挂进自己的 {@code HttpServer}，与 {@code /health}、{@code /__instance}
+     * 共用一个端口（最长前缀匹配：以上两者不会被根上下文吃掉）。
+     * <p>
+     * 不能只贴 {@code this::route}：{@link #route} 是 {@code private}，lambda 会
+     * 拿到包私有访问。这里直接把它提到 {@code public}，行为不变 —— 这条方法仍然是
+     * 无状态的（只读 {@code store} 与 {@code json} 两个实例字段）。
+     */
+    public HttpHandler handler() {
+        return this::route;
+    }
+
     /** 真实监听端口（{@code port=0} 时是内核挑的那个）；未启动时退回请求值。 */
     public int getPort() {
         int bound = boundPort;
@@ -234,6 +248,9 @@ public class QdrantRestServer {
 
     private void handleCreateCollection(HttpExchange exchange, String name) throws IOException {
         Map<String, Object> body = parseJson(exchange);
+        // dimension 缺省 128：OpenAPI 没把 dimension 列为 required（缺 required 列表），
+        // 既有测试契约『缺省 dimension 仍该可用』也是这么定的。前端表单强制必填 + 服务端给默认值的
+        // 双层防护可以并存：服务端不要替前端决定默认值是多少，前端漏传时按服务端默认（128）建出来。
         int dimension = asInt(body.get("dimension"), 128, "dimension");
         DistanceMetric metric = parseMetric(body.get("metric"));
         Map<String, Object> indexParams = asParamsMap(body.get("index_params"), "index_params");
@@ -377,13 +394,39 @@ public class QdrantRestServer {
             sendError(exchange, 400, "Missing 'points' field");
             return;
         }
+        // 404 而非 400：缺集合名是「资源不存在」，不是「请求体错」。
+        // 不在这里提前 hasCollection，store.upsertBatch(name, ...) 就会抛 VectorException → 400，
+        // 前端会把"集合不存在"渲染成"请求失败"，与 DELETE /collections/{n} 的 404 语义脱节。
+        if (!store.hasCollection(name)) {
+            sendError(exchange, 404, "Collection not found: " + name);
+            return;
+        }
         List<VectorPoint> points = new ArrayList<>();
-        for (Map<String, Object> p : pointsList) {
-            String id = String.valueOf(p.get("id"));
-            @SuppressWarnings("unchecked")
-            List<Number> vec = (List<Number>) p.get("vector");
-            float[] vector = new float[vec.size()];
-            for (int i = 0; i < vec.size(); i++) vector[i] = vec.get(i).floatValue();
+        for (int i = 0; i < pointsList.size(); i++) {
+            Map<String, Object> p = pointsList.get(i);
+            Object idObj = p.get("id");
+            if (idObj == null) {
+                throw new IllegalArgumentException("points[" + i + "].id is required");
+            }
+            String id = String.valueOf(idObj);
+            // vector 必须为数字数组：之前直接 (List<Number>) p.get("vector") 在 vector 是字符串时
+            // 抛 ClassCastException → route() catch Exception 转 500；这里显式 instanceof 判，
+            // 不合法直接 IAE → 400 + 清楚的 message。
+            Object rawVec = p.get("vector");
+            if (!(rawVec instanceof List)) {
+                throw new IllegalArgumentException("points[" + i + "].vector must be a number array, got: "
+                        + (rawVec == null ? "null" : rawVec.getClass().getSimpleName()));
+            }
+            List<?> rawVecList = (List<?>) rawVec;
+            float[] vector = new float[rawVecList.size()];
+            for (int j = 0; j < rawVecList.size(); j++) {
+                Object o = rawVecList.get(j);
+                if (!(o instanceof Number)) {
+                    throw new IllegalArgumentException("points[" + i + "].vector[" + j
+                            + "] is not a number: " + o);
+                }
+                vector[j] = ((Number) o).floatValue();
+            }
             @SuppressWarnings("unchecked")
             Map<String, Object> payload = (Map<String, Object>) p.getOrDefault("payload", new LinkedHashMap<>());
             points.add(new VectorPoint(id, vector, payload));
@@ -420,14 +463,26 @@ public class QdrantRestServer {
 
     private void handleSearch(HttpExchange exchange, String name) throws IOException {
         Map<String, Object> body = parseJson(exchange);
-        @SuppressWarnings("unchecked")
-        List<Number> vec = (List<Number>) body.get("vector");
-        if (vec == null) {
+        // 同样：缺集合 → 404，与 DELETE /collections/{n}、GET /collections/{n} 保持一致。
+        if (!store.hasCollection(name)) {
+            sendError(exchange, 404, "Collection not found: " + name);
+            return;
+        }
+        // vector 必填为数字数组：与 upsert 同样的 instanceof 防线，避免 CCE → 500。
+        Object rawQueryVec = body.get("vector");
+        if (!(rawQueryVec instanceof List)) {
             sendError(exchange, 400, "Missing 'vector' field");
             return;
         }
-        float[] queryVector = new float[vec.size()];
-        for (int i = 0; i < vec.size(); i++) queryVector[i] = vec.get(i).floatValue();
+        List<?> rawVecList = (List<?>) rawQueryVec;
+        float[] queryVector = new float[rawVecList.size()];
+        for (int i = 0; i < rawVecList.size(); i++) {
+            Object o = rawVecList.get(i);
+            if (!(o instanceof Number)) {
+                throw new IllegalArgumentException("vector[" + i + "] is not a number: " + o);
+            }
+            queryVector[i] = ((Number) o).floatValue();
+        }
         int topK = ((Number) body.getOrDefault("limit", 10)).intValue();
         Boolean buildIndex = (Boolean) body.get("build_index");
         if (Boolean.TRUE.equals(buildIndex) && !store.isIndexed(name)) {
@@ -435,8 +490,12 @@ public class QdrantRestServer {
         }
         // 过滤：形状与错误语义见 parseFilter —— 解析不出来必须 400，不能把"没筛过"当结果发出去。
         Filter filter = parseFilter(body.get("filter"));
+        long t0 = System.nanoTime();
 
         List<SearchResult> results = store.search(name, queryVector, topK, filter);
+        // 真实耗时：先前这里写 0 是占位，前端检索页的「耗时」列因此永远是 0。
+        // 量级断言（time_ms >= 0）由 QdrantRestServerSearchTimeMsTest 守住。
+        long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
         List<Map<String, Object>> hits = new ArrayList<>();
         for (SearchResult r : results) {
             Map<String, Object> hit = new LinkedHashMap<>();
@@ -450,7 +509,7 @@ public class QdrantRestServer {
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("result", hits);
         resp.put("status", "ok");
-        resp.put("time_ms", 0); // 占位：未来加耗时统计
+        resp.put("time_ms", elapsedMs);
         sendJson(exchange, 200, resp);
     }
 

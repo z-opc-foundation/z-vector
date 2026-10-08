@@ -16,30 +16,36 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
+import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * z-vector-server 独立服务器的端到端 HTTP 测试。
  * <p>
- * 这个模块此前 <b>一个测试都没有</b>（src/test 目录不存在），所以下面每一条都是在
- * 钉一个真实存在过的缺陷，不是装饰性断言。
+ * feature001 之后：本 server 改挂 Qdrant 风格 REST（与内嵌 starter 同形状），
+ * 全部 7 条路由（GET/POST/PUT/DELETE）经 {@link com.zifang.z.vector.grpc.QdrantRestServer#handler()}
+ * 走单点定义，OpenApiSpec 与真实路由一致。本测试只钉 server 这一层装配（最长前缀挂载 /health、/__instance、根上下文）。
  */
 class VectorServerApplicationTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private HttpServer server;
+    private InMemoryVectorStore store;
     private String base;
 
     @BeforeEach
     void setUp() throws Exception {
-        InMemoryVectorStore store = new InMemoryVectorStore();
+        store = new InMemoryVectorStore();
         store.createCollection("docs", 3, DistanceMetric.COSINE, IndexType.FLAT, null);
-        server = VectorServerApplication.start(0, store);
+        server = VectorServerApplication.start(0, store, "/tmp/zvector-test", Instant.now(), Collections.emptyList());
         base = "http://127.0.0.1:" + server.getAddress().getPort();
     }
 
@@ -125,9 +131,7 @@ class VectorServerApplicationTest {
         assertEquals(200, r.status);
         // 这一条以前长这样：assertEquals("1.0.2", r.json().get("version"))，而 main 里就是同一个
         // 字面量 —— 两边一起漂，断言永远绿（同一处错过两次：1.0.1 对 1.0.2、1.0.2 对 1.0.3）。
-        // 参照值取聚合 pom 的 <revision>（全仓版本的唯一定义点）。不再读模块 pom 的第一个
-        // <version>：模块 pom 如今压根不写自己的版本，那样会一路读到依赖的头上去
-        // （实测读到的是字面量 "${project.version}"）。
+        // 参照值取聚合 pom 的 <revision>（全仓版本的唯一定义点）。
         String revision = PomFiles.revisionOf(PomFiles.read(PomFiles.rootPom()));
         assertEquals(revision, r.json().get("version"),
                 "/health 报的版本不等于聚合 pom 的 <revision>（revision=" + revision + "）");
@@ -166,106 +170,175 @@ class VectorServerApplicationTest {
     // ==================== /collections ====================
 
     @Test
-    void listCollectionsReturnsStoreContents() throws Exception {
+    void listCollectionsReturnsQdrantShape() throws Exception {
         Resp r = call("GET", "/collections", null);
         assertEquals(200, r.status);
-        assertTrue(r.text().contains("docs"), r.text());
+        assertEquals("ok", r.json().get("status"));
+        List<?> names = (List<?>) r.json().get("collections");
+        assertNotNull(names, "Qdrant 形状 GET /collections 必须返 {status,collections:[…]}，" +
+                "不能退回裸数组（独立 server 与内嵌 starter 形状必须一致）: " + r.text());
+        assertTrue(names.contains("docs"), r.text());
     }
 
     @Test
     void createCollectionAcceptsIntegerDimensions() throws Exception {
-        Resp r = call("PUT", "/collections", "{\"name\":\"imgs\",\"dimensions\":4}");
+        Resp r = call("PUT", "/collections/imgs", "{\"dimension\":4}");
         assertEquals(200, r.status, r.text());
-        assertEquals("imgs", r.json().get("collection"));
+        assertEquals("imgs", r.json().get("name"));
+        assertEquals(4, ((Number) r.json().get("dimension")).intValue());
         // 真的建出来了，而不只是回了个 ok
-        InMemoryVectorStore store = (InMemoryVectorStore) store();
         assertTrue(store.hasCollection("imgs"));
         assertEquals(4, store.getCollection("imgs").getDimension());
+    }
+
+    @Test
+    void createCollectionEchoesRealIndexTypeNotClientSupplied() throws Exception {
+        // 创建响应回读 store 里真建出来的那个 index_type，避免「回吐 FLAT 而 store 里其实是 HNSW」的假阳性
+        Resp r = call("PUT", "/collections/hnsw_demo",
+                "{\"dimension\":4,\"metric\":\"COSINE\",\"index_type\":\"HNSW\",\"index_params\":{\"M\":16}}");
+        assertEquals(200, r.status, r.text());
+        assertEquals("HNSW", r.json().get("index_type"), "响应必须回读真实 index_type 而不是回吐客户端传值");
+        Map<?, ?> params = (Map<?, ?>) r.json().get("index_params");
+        assertNotNull(params, "index_params 必须回读出来：M=16 到底进没进去，必须能在响应里看到");
+        assertEquals(16, ((Number) params.get("M")).intValue());
     }
 
     @Test
     void jacksonParsesJsonIntsAsDoubleSoCastMustTolerateIt() throws Exception {
         // 此前代码写的是 (int) request.get("dimensions")。JSON 数字经 Jackson 默认
         // 走 Integer，但一旦客户端提交 4.0 或走 float 通道就是 Double —— CCE 直接 500。
-        Resp r = call("PUT", "/collections", "{\"name\":\"f4\",\"dimensions\":4.0}");
-        assertEquals(200, r.status, "dimensions 以小数形式提交不应 500: " + r.text());
+        Resp r = call("PUT", "/collections/f4", "{\"dimension\":4.0}");
+        assertEquals(200, r.status, "dimension 以小数形式提交不应 500: " + r.text());
     }
 
     @Test
-    void missingOrNonPositiveDimensionsIs400NotNpe() throws Exception {
+    void missingOrNonPositiveDimensionIs400NotNpe() throws Exception {
         // 此前 (int) get(...) 遇 null 直接 NPE → 500 "Internal error: null"
-        assertEquals(400, call("PUT", "/collections", "{\"name\":\"x\"}").status);
-        assertEquals(400, call("PUT", "/collections", "{\"dimensions\":4}").status);
-        assertEquals(400, call("PUT", "/collections", "{\"name\":\"x\",\"dimensions\":0}").status);
-        assertEquals(400, call("PUT", "/collections", "{\"name\":\"\",\"dimensions\":4}").status);
+        // dimension 缺省值 128 是 OpenAPI 既有契约；只对非正 / 类型错返回 400。
+        assertEquals(400, call("PUT", "/collections/x", "{\"dimension\":0}").status);
+        assertEquals(400, call("PUT", "/collections/x", "{\"dimension\":-1}").status);
+        assertEquals(400, call("PUT", "/collections/x", "{\"dimension\":\"oops\"}").status);
+        // 缺省 dimension 走 128：与 grpc-server 那边的契约对齐（OpenAPI 没把 dimension 列为 required）。
+        Resp absent = call("PUT", "/collections/absent", "{}");
+        assertEquals(200, absent.status, "缺省 dimension 仍该可用: " + absent.text());
+        assertEquals(128, ((Number) absent.json().get("dimension")).intValue());
     }
 
     @Test
-    void unknownMethodOnCollectionsIs405WithBody() throws Exception {
+    void unknownMethodOnCollectionsRootIs405() throws Exception {
+        // QdrantRestServer.route() 的 "/collections" 分支只接受 GET；其它方法 → 405
         Resp r = call("DELETE", "/collections", null);
         assertEquals(405, r.status);
-        assertNotNull(r.json().get("error"));
+        Map<?, ?> err = r.json();
+        assertEquals("error", err.get("status"));
+        assertEquals(405, ((Number) err.get("code")).intValue(),
+                "错误响应里 code 必须等于 HTTP code，前端 axios 拦截器按 code 判断");
     }
 
-    // ==================== /points ====================
+    // ==================== Qdrant 形状独有：单点 GET/DELETE ====================
+
+    @Test
+    void singlePointGetWorks() throws Exception {
+        // PUT /collections/docs/points 先 upsert 一条
+        call("PUT", "/collections/docs/points",
+                "{\"points\":[{\"id\":\"p1\",\"vector\":[1,0,0],\"payload\":{\"k\":\"v\"}}]}");
+        // 单点 GET —— z-opc api.js 旧版曾因 extractCollectionName(path,"/points/") 把后缀按 8 个字符切
+        // 而把 "/collections/docs/points/p1" 切成集合名 "docs/p"。这条测试钉当前实现不再踩同一个坑：
+        // route() 的 P_POINT_BY_ID 分支走 indexOf("/points/") 取集合名与 id，应当正常返回。
+        Resp r = call("GET", "/collections/docs/points/p1", null);
+        assertEquals(200, r.status, "单点 GET 之前因为路径切分 bug 切成集合名 docs/p 报 404，" +
+                "现在必须能正确返回单点: " + r.text());
+        assertEquals("p1", r.json().get("id"));
+        List<?> vec = (List<?>) r.json().get("vector");
+        assertEquals(1.0, ((Number) vec.get(0)).doubleValue(), 1e-6);
+    }
+
+    @Test
+    void singlePointGetOnMissingIdIs404() throws Exception {
+        Resp r = call("GET", "/collections/docs/points/nope", null);
+        assertEquals(404, r.status, "缺 id 必须 404 而不是把 id 当集合名吞掉: " + r.text());
+    }
+
+    @Test
+    void pointsCountEndpointWorks() throws Exception {
+        call("PUT", "/collections/docs/points",
+                "{\"points\":[{\"id\":\"a\",\"vector\":[1,0,0]},{\"id\":\"b\",\"vector\":[0,1,0]}]}");
+        Resp r = call("GET", "/collections/docs/points/count", null);
+        assertEquals(200, r.status);
+        assertEquals(2, ((Number) r.json().get("count")).intValue());
+    }
+
+    // ==================== /points + /search ====================
 
     @Test
     void upsertThenSearchRoundTrip() throws Exception {
-        Resp up = call("POST", "/points", "{\"collection\":\"docs\",\"points\":["
+        Resp up = call("PUT", "/collections/docs/points", "{\"points\":["
                 + "{\"id\":\"a\",\"vector\":[1,0,0],\"payload\":{\"lang\":\"en\"}},"
                 + "{\"id\":\"b\",\"vector\":[0,1,0],\"payload\":{\"lang\":\"zh\"}}]}");
         assertEquals(200, up.status, up.text());
-        assertEquals(2, ((Number) up.json().get("upserted")).intValue());
+        assertEquals(2, ((Number) up.json().get("count")).intValue());
 
-        Resp se = call("POST", "/search", "{\"collection\":\"docs\",\"vector\":[0.9,0.1,0],\"limit\":2}");
+        Resp se = call("POST", "/collections/docs/points/search",
+                "{\"vector\":[0.9,0.1,0],\"limit\":2}");
         assertEquals(200, se.status, se.text());
-        List<?> hits = (List<?>) se.json().get("results");
+        assertEquals("ok", se.json().get("status"));
+        List<?> hits = (List<?>) se.json().get("result");
         assertEquals(2, hits.size());
         Map<?, ?> top = (Map<?, ?>) hits.get(0);
         assertEquals("a", top.get("id"), "最近邻应是 a: " + se.text());
         assertTrue(top.containsKey("score"));
         assertTrue(top.containsKey("payload"));
+        // time_ms 真实测量（feature001 把硬编码 0 改成了真实 nanoTime 差）
+        assertNotNull(se.json().get("time_ms"),
+                "search 响应必须带 time_ms，不能退化到占位 0: " + se.text());
+        assertTrue(((Number) se.json().get("time_ms")).longValue() >= 0);
     }
 
     @Test
     void searchLimitIsHonoured() throws Exception {
-        call("POST", "/points", "{\"collection\":\"docs\",\"points\":["
+        call("PUT", "/collections/docs/points", "{\"points\":["
                 + "{\"id\":\"a\",\"vector\":[1,0,0]},{\"id\":\"b\",\"vector\":[0,1,0]},"
                 + "{\"id\":\"c\",\"vector\":[0,0,1]}]}");
-        Resp r = call("POST", "/search", "{\"collection\":\"docs\",\"vector\":[1,1,1],\"limit\":1}");
+        Resp r = call("POST", "/collections/docs/points/search",
+                "{\"vector\":[1,1,1],\"limit\":1}");
         assertEquals(200, r.status);
-        assertEquals(1, ((List<?>) r.json().get("results")).size(), "limit 必须生效");
+        assertEquals(1, ((List<?>) r.json().get("result")).size(), "limit 必须生效");
     }
 
     @Test
     void missingCollectionIs404NotNpe() throws Exception {
-        // 此前 hasCollection(null) 会走进实现里抛异常 → 500
-        assertEquals(404, call("POST", "/points",
-                "{\"collection\":\"nope\",\"points\":[]}").status);
-        assertEquals(404, call("POST", "/search",
-                "{\"collection\":\"nope\",\"vector\":[1,0,0]}").status);
-        assertEquals(404, call("POST", "/points", "{\"points\":[]}").status);
+        assertEquals(404, call("PUT", "/collections/nope/points",
+                "{\"points\":[]}").status);
+        assertEquals(404, call("POST", "/collections/nope/points/search",
+                "{\"vector\":[1,0,0]}").status);
+        assertEquals(404, call("GET", "/collections/nope", null).status);
+        assertEquals(404, call("PUT", "/collections/nope/points",
+                "{\"points\":[]}").status);
     }
 
     @Test
     void badVectorShapeIs400Not500() throws Exception {
-        Resp r = call("POST", "/points", "{\"collection\":\"docs\",\"points\":[{\"id\":\"a\",\"vector\":\"oops\"}]}");
-        assertEquals(400, r.status, "非法 vector 应是 400 + error，实际 " + r.status + " " + r.text());
-        assertNotNull(r.json().get("error"));
+        Resp r = call("PUT", "/collections/docs/points",
+                "{\"points\":[{\"id\":\"a\",\"vector\":\"oops\"}]}");
+        assertEquals(400, r.status, "非法 vector 应是 400 + message，实际 " + r.status + " " + r.text());
+        assertEquals("error", r.json().get("status"));
+        assertNotNull(r.json().get("message"),
+                "Qdrant 形状错误体用 message 而不是 error —— 前端按 .message 取文案");
     }
 
     // ==================== UTF-8：中文 payload ====================
 
     @Test
     void chinesePayloadSurvivesRoundTrip() throws Exception {
-        Resp up = call("POST", "/points", "{\"collection\":\"docs\",\"points\":[{\"id\":\"中文\",\"vector\":[1,0,0],"
-                + "\"payload\":{\"标题\":\"向量数据库\"}}]}");
+        Resp up = call("PUT", "/collections/docs/points",
+                "{\"points\":[{\"id\":\"中文\",\"vector\":[1,0,0],\"payload\":{\"标题\":\"向量数据库\"}}]}");
         assertEquals(200, up.status, up.text());
-        assertEquals(1, ((Number) up.json().get("upserted")).intValue(), "1 条中文记录应写成功");
+        assertEquals(1, ((Number) up.json().get("count")).intValue(), "1 条中文记录应写成功");
 
-        Resp se = call("POST", "/search", "{\"collection\":\"docs\",\"vector\":[1,0,0],\"limit\":1}");
+        Resp se = call("POST", "/collections/docs/points/search",
+                "{\"vector\":[1,0,0],\"limit\":1}");
         assertEquals(200, se.status);
-        Map<?, ?> top = (Map<?, ?>) ((List<?>) se.json().get("results")).get(0);
+        Map<?, ?> top = (Map<?, ?>) ((List<?>) se.json().get("result")).get(0);
         // 此前 getBytes() 用平台默认字符集、且 Content-Length 用 String.length 口径，
         // 中文会被写成乱码或按字节数截断
         assertEquals("向量数据库", ((Map<?, ?>) top.get("payload")).get("标题"), se.text());
@@ -283,24 +356,9 @@ class VectorServerApplicationTest {
     // ==================== 空 body / 边界 ====================
 
     @Test
-    void emptyBodyOnPutIsTreatedAsMissingFieldsNotError() throws Exception {
-        assertEquals(400, call("PUT", "/collections", "").status);
-    }
-
-    @Test
     void upsertEmptyPointListIsOkAndAddsNothing() throws Exception {
-        Resp r = call("POST", "/points", "{\"collection\":\"docs\",\"points\":[]}");
+        Resp r = call("PUT", "/collections/docs/points", "{\"points\":[]}");
         assertEquals(200, r.status, r.text());
-        assertEquals(0, ((Number) r.json().get("upserted")).intValue());
-    }
-
-    private Object store() {
-        try {
-            java.lang.reflect.Field f = VectorServerApplication.class.getDeclaredField("vectorStore");
-            f.setAccessible(true);
-            return f.get(null);
-        } catch (ReflectiveOperationException e) {
-            throw new AssertionError(e);
-        }
+        assertEquals(0, ((Number) r.json().get("count")).intValue());
     }
 }

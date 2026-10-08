@@ -2,6 +2,7 @@ package com.zifang.z.vector.server;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
+import com.zifang.z.vector.api.IndexType;
 import com.zifang.z.vector.api.VectorCollection;
 import com.zifang.z.vector.api.VectorStore;
 import com.zifang.z.vector.core.InMemoryVectorStore;
@@ -17,6 +18,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -29,19 +31,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 独立 server 的<b>索引选择</b>契约：客户端说 HNSW，建出来的就得是 HNSW；env 说默认 HNSW，
  * 没写 {@code index_type} 的那一支也得吃到。
  * <p>
- * 改前的形状（实测，不是推测）：这台 server 的 {@code POST/PUT /collections} 调的是 3 参
- * {@code createCollection}，body 里的 {@code index_type} 收下来就丢 —— 而
- * {@code OpenApiSpec.CreateCollectionRequest} 广告了它、gRPC 侧那台 {@code QdrantRestServer}
- * 读了它 ⇒ 同一个产品两个 REST 面，换一个部署就静默变 FLAT，而且回 200。
- * env 侧更是压根没有旋钮（只有 {@code ZVECTOR_PORT} / {@code ZVECTOR_DATA_DIR}），
- * 所以 {@code VectorStore.setDefaultIndex} 的 javadoc 当时只能写"server 自己从不调本方法"。
- * <p>
- * {@link VectorServerApplicationTest} 用 {@code start(port, store)} 直接起 handler；
- * 这一族走的是 {@code boot(env)} —— 也就是 {@code main()} 自己走的那条装配路，
- * 因为"env 有没有落到 store 上"这件事只有走装配路才可能被问到。
- * <p>
- * 顺带把 {@code shutdown()} 也钉上：走装配路时才看得见它，而它当时是坏的
- * （见 {@link #shutdownPathClosesTheStore}）。
+ * feature001 之后：server 改挂 Qdrant 风格 REST（与内嵌 starter 同形状）。
+ * 旧契约「body 里的 {@code index_type} 收下来就丢 / env 没有默认索引旋钮」在这套新形状里都仍有效，
+ * 路径换成形如 {@code PUT /collections/{name}} —— 集合名从 URL 路径取，body 只放配置。
  */
 class ServerIndexContractTest {
 
@@ -111,7 +103,8 @@ class ServerIndexContractTest {
 
     private void openWith(VectorStore s) throws IOException {
         store = s;
-        server = VectorServerApplication.start(0, s);
+        server = VectorServerApplication.start(0, s, "/tmp/zvector-server-index-test",
+                java.time.Instant.now(), java.util.Collections.<String>emptyList());
         base = "http://127.0.0.1:" + server.getAddress().getPort();
     }
 
@@ -137,16 +130,17 @@ class ServerIndexContractTest {
     @Test
     void bodyIndexTypeReachesStoreAndResponse() throws Exception {
         openWith(new InMemoryVectorStore());
-        Resp r = call("PUT", "/collections", "{\"name\":\"imgs\",\"dimensions\":4,"
-                + "\"metric\":\"L2\",\"index_type\":\"hnsw\",\"index_params\":{\"M\":7,\"ef_construction\":33}}");
+        Resp r = call("PUT", "/collections/imgs",
+                "{\"dimension\":4,\"metric\":\"L2\",\"index_type\":\"hnsw\","
+                        + "\"index_params\":{\"M\":7,\"ef_construction\":33}}");
         assertEquals(200, r.status, r.text());
-        // 小写也认（与 gRPC 侧那台一致：都走 toUpperCase 归一）
+        // 小写也认（与 QdrantRestServer.parseIndexType 走 toUpperCase 归一）
         assertEquals("HNSW", r.field("index_type"), "响应没报出真正用的索引");
         assertEquals(7, num(r.map("index_params").get("M")), "响应里的 index_params 不对");
 
         VectorCollection vc = store.getCollection("imgs");
         assertNotNull(vc);
-        assertEquals(com.zifang.z.vector.api.IndexType.HNSW, vc.getIndexType(),
+        assertEquals(IndexType.HNSW, vc.getIndexType(),
                 "响应说 HNSW 而建出来是 " + vc.getIndexType());
         assertEquals(7, num(vc.getConfig().get("M")));
         assertEquals(33, num(vc.getConfig().get("ef_construction")));
@@ -157,26 +151,30 @@ class ServerIndexContractTest {
         InMemoryVectorStore s = new InMemoryVectorStore();
         Map<String, Object> dflt = new LinkedHashMap<>();
         dflt.put("nlist", 5);
-        s.setDefaultIndex(com.zifang.z.vector.api.IndexType.IVF, dflt);
+        s.setDefaultIndex(IndexType.IVF, dflt);
         openWith(s);
-        Resp r = call("PUT", "/collections", "{\"name\":\"vecs\",\"dimensions\":4}");
+        Resp r = call("PUT", "/collections/vecs", "{\"dimension\":4}");
         assertEquals(200, r.status, r.text());
         assertEquals("IVF", r.field("index_type"));
         assertEquals(5, num(r.map("index_params").get("nlist")),
-                "3 参那一支不许把默认索引的参数丢掉: " + r.text());
+                "没写 index_type 的那一支不许把默认索引的参数丢掉: " + r.text());
     }
 
     @Test
     void unknownIndexTypeIs400AndCreatesNothing() throws Exception {
         openWith(new InMemoryVectorStore());
-        Resp r = call("PUT", "/collections", "{\"name\":\"x\",\"dimensions\":4,\"index_type\":\"HNSWW\"}");
+        Resp r = call("PUT", "/collections/x",
+                "{\"dimension\":4,\"index_type\":\"HNSWW\"}");
         assertEquals(400, r.status, "拼错的索引名不该静默降级: " + r.text());
-        String err = String.valueOf(r.field("error"));
-        assertTrue(err.contains("index_type"), "错误消息要指名是哪个字段: " + err);
+        Map<?, ?> err = r.body;
+        // Qdrant 形状错误体是 {status, code, message}
+        assertEquals("error", err.get("status"));
+        String msg = String.valueOf(err.get("message"));
+        assertTrue(msg.contains("index_type"), "错误消息要指名是哪个字段: " + msg);
         // 逐个真枚举常量核，而不是手写三个名字：抄来的清单只会核出"抄的这三个在"，
         // 枚举加了第四个常量、消息却漏告知，那种红只有遍历真枚举才看得到。
-        for (com.zifang.z.vector.api.IndexType t : com.zifang.z.vector.api.IndexType.values()) {
-            assertTrue(err.contains(t.name()), "错误消息里没列出 " + t.name() + ": " + err);
+        for (IndexType t : IndexType.values()) {
+            assertTrue(msg.contains(t.name()), "错误消息里没列出 " + t.name() + ": " + msg);
         }
         assertEquals(0, store.listCollections().size(), "被拒的请求不许留下集合: "
                 + store.listCollections());
@@ -185,12 +183,12 @@ class ServerIndexContractTest {
     @Test
     void indexParamsMustBeAnObject() throws Exception {
         openWith(new InMemoryVectorStore());
-        assertEquals(400, call("PUT", "/collections",
-                "{\"name\":\"a\",\"dimensions\":4,\"index_type\":\"HNSW\",\"index_params\":[1,2]}").status);
-        assertEquals(400, call("PUT", "/collections",
-                "{\"name\":\"b\",\"dimensions\":4,\"index_type\":\"HNSW\",\"index_params\":\"M=7\"}").status);
-        assertEquals(400, call("PUT", "/collections",
-                "{\"name\":\"c\",\"dimensions\":4,\"index_type\":42}").status);
+        assertEquals(400, call("PUT", "/collections/a",
+                "{\"dimension\":4,\"index_type\":\"HNSW\",\"index_params\":[1,2]}").status);
+        assertEquals(400, call("PUT", "/collections/b",
+                "{\"dimension\":4,\"index_type\":\"HNSW\",\"index_params\":\"M=7\"}").status);
+        assertEquals(400, call("PUT", "/collections/c",
+                "{\"dimension\":4,\"index_type\":42}").status);
         assertEquals(0, store.listCollections().size(), "三个坏请求都不该留下集合: "
                 + store.listCollections());
     }
@@ -201,10 +199,10 @@ class ServerIndexContractTest {
     void bootAppliesEnvDefaultIndex(@TempDir java.nio.file.Path dir) throws Exception {
         bootWith(env(dir.toString(), "ZVECTOR_DEFAULT_INDEX", "hnsw",
                 "ZVECTOR_INDEX_PARAMS", "{\"M\":9}"));
-        Resp r = call("PUT", "/collections", "{\"name\":\"docs\",\"dimensions\":4}");
+        Resp r = call("PUT", "/collections/docs", "{\"dimension\":4}");
         assertEquals(200, r.status, r.text());
         assertEquals("HNSW", r.field("index_type"),
-                "env 里配的默认索引没落到 3 参那一支上（改前恒 FLAT）");
+                "env 里配的默认索引没落到没传 index_type 的那一支上（改前恒 FLAT）");
         assertEquals(9, num(r.map("index_params").get("M")), "env 的 index_params 没进集合");
     }
 
@@ -212,7 +210,7 @@ class ServerIndexContractTest {
     void emptyEnvMeansNoOverride(@TempDir java.nio.file.Path dir) throws Exception {
         // 空串必须与"不设"同义：容器里 ENV FOO="" 是常态，把它当非法值会让镜像起不来
         bootWith(env(dir.toString(), "ZVECTOR_DEFAULT_INDEX", "", "ZVECTOR_INDEX_PARAMS", ""));
-        Resp r = call("PUT", "/collections", "{\"name\":\"plain\",\"dimensions\":4}");
+        Resp r = call("PUT", "/collections/plain", "{\"dimension\":4}");
         assertEquals("FLAT", r.field("index_type"), r.text());
     }
 
@@ -257,18 +255,22 @@ class ServerIndexContractTest {
     @Test
     void createdIndexSurvivesARealRestart(@TempDir java.nio.file.Path dir) throws Exception {
         bootWith(env(dir.toString(), "ZVECTOR_DEFAULT_INDEX", "HNSW"));
-        Resp r = call("PUT", "/collections", "{\"name\":\"docs\",\"dimensions\":3,"
-                + "\"index_type\":\"HNSW\",\"index_params\":{\"M\":9,\"ef_construction\":40}}");
+        Resp r = call("PUT", "/collections/docs",
+                "{\"dimension\":3,\"index_type\":\"HNSW\",\"index_params\":{\"M\":9,\"ef_construction\":40}}");
         assertEquals(200, r.status, r.text());
-        call("POST", "/points", "{\"collection\":\"docs\",\"points\":["
-                + "{\"id\":\"a\",\"vector\":[1,0,0],\"payload\":{\"lang\":\"en\"}},"
-                + "{\"id\":\"b\",\"vector\":[0,1,0]},{\"id\":\"c\",\"vector\":[0,0,1]}]}");
+        // upsert 走 Qdrant 形状：path 取集合名，body 只放 points
+        Resp up = call("PUT", "/collections/docs/points",
+                "{\"points\":["
+                        + "{\"id\":\"a\",\"vector\":[1,0,0],\"payload\":{\"lang\":\"en\"}},"
+                        + "{\"id\":\"b\",\"vector\":[0,1,0]},"
+                        + "{\"id\":\"c\",\"vector\":[0,0,1]}]}");
+        assertEquals(200, up.status, up.text());
         closeFirstInstance();
 
         bootWith(env(dir.toString(), "ZVECTOR_DEFAULT_INDEX", "HNSW"));
         VectorCollection vc = store.getCollection("docs");
         assertNotNull(vc, "重启后集合没了");
-        assertEquals(com.zifang.z.vector.api.IndexType.HNSW, vc.getIndexType());
+        assertEquals(IndexType.HNSW, vc.getIndexType());
         assertEquals(9, num(vc.getConfig().get("M")),
                 "重启后 index_params 丢了（getConfig=" + vc.getConfig() + "）");
         assertEquals(40, num(vc.getConfig().get("ef_construction")));
@@ -276,8 +278,9 @@ class ServerIndexContractTest {
     }
 
     private java.util.List<?> readHits() throws IOException {
-        return (java.util.List<?>) call("POST", "/search",
-                "{\"collection\":\"docs\",\"vector\":[1,0,0],\"limit\":3}").body.get("results");
+        // Qdrant 形状 search 响应 key 是 "result" 不是 "results"
+        return (List<?>) call("POST", "/collections/docs/points/search",
+                "{\"vector\":[1,0,0],\"limit\":3}").body.get("result");
     }
 
     /**
@@ -293,8 +296,8 @@ class ServerIndexContractTest {
         VectorServerApplication.Boot b = bootWith(env(dir.toString()));
         assertTrue(b.store instanceof AutoCloseable,
                 "VectorStore 必须是 AutoCloseable —— PersistentVectorStore 的 javadoc 用法示例写的就是 try-with-resources");
-        assertEquals(200, call("PUT", "/collections",
-                "{\"name\":\"docs\",\"dimensions\":3}").status);
+        assertEquals(200, call("PUT", "/collections/docs",
+                "{\"dimension\":3}").status);
         assertFalse(b.store.isClosed(), "还没关，不该已经是 closed");
 
         VectorServerApplication.shutdown(b.server, b.store);

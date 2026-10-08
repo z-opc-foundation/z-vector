@@ -1,0 +1,30 @@
+{
+  "name": "z-vector-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "z-vector 管理台前端（feature001）。同 React19 + Vite6 + AntD6 栈，直接搬 z-opc common/components，组件层 ./console/pages 导出 routes manifest。",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^6.1.0",
+    "antd": "^6.3.3",
+    "axios": "^1.16.1",
+    "dayjs": "^1.11.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.13.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "jsdom": "^25.0.1",
+    "vite": "^6.2.6",
+    "vitest": "^2.1.9"
+  }
+}
