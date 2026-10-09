@@ -9,10 +9,11 @@ export default defineConfig({
     plugins: [react()],
     build: {
         lib: {
-            entry: path.resolve(__dirname, 'src/index.js'),
-            name: 'ZVectorComponent',
+            entry: {
+                index: path.resolve(__dirname, 'src/index.js'),
+                pages: path.resolve(__dirname, 'src/pages.js'),
+            },
             formats: ['es'],
-            fileName: () => 'index.js',
         },
         outDir: 'dist',
         emptyOutDir: true,
@@ -24,7 +25,7 @@ export default defineConfig({
                 'react-dom/client',
                 'react-router-dom',
                 'antd',
-                '@ant-design/icons',
+                '@ant-design/icons', 'axios',
             ],
         },
     },

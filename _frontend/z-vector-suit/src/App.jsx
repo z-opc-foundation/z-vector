@@ -1,7 +1,9 @@
 import { Component } from 'react'
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom'
 import { AppLayout } from '@yuku123/z-vector-component'
-import { menuConfig, routeTable, appMeta } from './console/routes.jsx'
+// 2026-10-09 pages 归位（lead 005 §9.3）：页面+api 迁 component 的 ./pages entry，
+// suit 只留壳——从 '@yuku123/z-vector-component/pages' 读 manifest。
+import { menuConfig, routeTable, appMeta } from '@yuku123/z-vector-component/pages'
 import { EmptyState } from '@yuku123/z-vector-component'
 
 class ErrorBoundary extends Component {

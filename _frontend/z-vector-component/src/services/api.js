@@ -1,4 +1,19 @@
-import request from '@/common/utils/request'
+import axios from 'axios'
+
+// lead 005 §9.3 终版：component 自洽——自带本域接口调用，前缀参数注入。
+// 默认 '/api'（vite proxy / nginx 反代同源），宿主换前缀时 configureVector({ apiBase })。
+let apiBase = '/api'
+
+export function configureVector({ apiBase: base } = {}) {
+    if (base !== undefined) apiBase = base
+}
+
+// 轻实例：unwrap response.data + 10s 超时（原 suit request.js 语义原样带走）
+const request = axios.create({ timeout: 10000, withCredentials: false })
+request.interceptors.response.use(
+    (response) => response.data,
+    (error) => Promise.reject(error),
+)
 
 /**
  * z-vector 管理面数据源（feature001 阶段一）。
@@ -25,7 +40,7 @@ import request from '@/common/utils/request'
  *   GET    /api/__instance                   → {version, port, uptime_ms, data_dir, jvm, java, collections, points_total, memory}
  * </pre>
  */
-const api = (path) => `/api${path}`
+const api = (path) => `${apiBase}${path}`
 
 export const vectorApi = {
     instance:           ()                  => request.get(api('/__instance')),
