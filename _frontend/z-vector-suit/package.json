@@ -1,9 +1,9 @@
 {
-  "name": "z-vector-frontend",
+  "name": "@yuku123/z-vector-suit",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "z-vector 管理台前端（feature001）。同 React19 + Vite6 + AntD6 栈，直接搬 z-opc common/components，组件层 ./console/pages 导出 routes manifest。",
+  "description": "z-vector 管理台独立运行壳（lead 005 §9.1 suit：组合 component + 数据接线 fetch /api/** + 路由）。不发布 npm",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@yuku123/z-vector-component": "file:../z-vector-component",
     "@ant-design/icons": "^6.1.0",
     "antd": "^6.3.3",
     "axios": "^1.16.1",

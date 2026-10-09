@@ -4,7 +4,7 @@ import { ConfigProvider } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import 'antd/dist/reset.css'
 import App from './App.jsx'
-import { antdTheme } from './common/components/ui/tokens.js'
+import { antdTheme } from '@yuku123/z-vector-component'
 
 /**
  * 阶段一（feature001）入口：

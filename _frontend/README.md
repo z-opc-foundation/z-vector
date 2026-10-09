@@ -1,10 +1,11 @@
 # z-vector 管理台前端
 
 > feature001 阶段一（分开发部署）。同 React 19 + Vite 6 + AntD 6 栈 + react-router-dom 7。
-> 与 z-opc 主壳同源；目录结构对齐 z-opc AGENTS.md 中「子模块自带 `_frontend/`」约定。
 >
-> 域前端归属规矩（lead 005 §8）：z-vector 的 console 唯一真源在本仓 `_frontend/`，
-> 不挂入 z-opc 主壳的 23 个域目录。组件层 `./console/pages` 导出 routes manifest。
+> **2026-10-09 分包落地**（lead 005 §9）：`_frontend/` 拆为两个 npm 节点——
+> `z-vector-component`（跨仓共享唯一面：ui primitives + AdminShell，props-only 零 fetch）
+> + `z-vector-suit`（独立运行壳：console 页面 + fetch /api/** + 路由，private 不发布）。
+> 域前端归属规矩（lead 005 §8）：console 唯一真源在本仓 `_frontend/`，不挂入 z-opc 主壳。
 
 ## 快速开始
 
@@ -18,7 +19,7 @@ ZVECTOR_PORT=6333 ZVECTOR_DATA_DIR=./_tmp-zvector ZVECTOR_DEFAULT_INDEX=HNSW \
   java -jar z-vector-server/target/z-vector-server-*.jar
 
 # 2) 起前端（dev 模式：vite dev :3000，proxy /collections /health /__instance → :6333）
-cd z-vector/_frontend
+cd z-vector/_frontend/z-vector-suit
 npm install
 npm run dev
 # → http://localhost:3000
@@ -28,11 +29,12 @@ npm run dev
 
 ### 阶段一：分开发部署（本 README 覆盖的范围）
 
-dev：`npm run dev`（3000）→ vite proxy → `:6333`。
+dev：`z-vector-suit` 内 `npm run dev`（3000）→ vite proxy → `:6333`。
 
-生产同源：构建产物在 `dist/`，用 `nginx.conf` + `Dockerfile` 部署：
+生产同源：构建产物在 `z-vector-suit/dist/`，用 `z-vector-suit/nginx.conf` + `Dockerfile` 部署：
 
 ```bash
+cd z-vector-suit
 npm run build
 docker build -t z-vector-frontend:local .
 docker run -d -p 8080:80 \
@@ -50,39 +52,41 @@ history 模式需要这一条；否则 `/collections` 会被当 SPA 路由返回
 `ZVECTOR_WEB_DIR` 环境变量开启 `z-vector-server` 静态托管 `dist/` + SPA fallback。
 详见 `_doc/001_feature/001_管理台前端/feature001.md` §6.2。
 
-## 目录结构
+## 目录结构（2026-10-09 分包后）
 
 ```
 _frontend/
-├── package.json
-├── vite.config.mjs        # dev :3000，proxy → :6333
-├── index.html
-├── nginx.conf             # 生产分开发部署
-├── Dockerfile             # 多阶段 build → nginx
-└── src/
-    ├── main.jsx           # 入口：ConfigProvider(zhCN + antdTheme)
-    ├── App.jsx            # BrowserRouter + AdminShell + routeTable
-    ├── common/            # 通用层（从 z-opc 1:1 搬，无 z-opc 业务耦合）
-    │   ├── utils/
-    │   │   ├── request.js # axios 实例（无 tenant/JWT；本仓阶段一无登录）
-    │   │   └── jwt.js     # 预留（未来接登录）
-    │   └── components/
-    │       ├── Layout/index.jsx   # 通用左菜单架子 AdminShell
-    │       ├── LoginPage/index.jsx# 占位
-    │       └── ui/                # PageHeader / EmptyState / ErrorState /
-    │                              # LoadingState / StatusBadge / SearchInput /
-    │                              # PagedTable / SectionHeader / TableToolbar / tokens
-    └── console/           # z-vector 管理台（第一个消费 AdminShell 的项目）
-        ├── routes.jsx     # menuConfig + routeTable + appMeta
-        ├── services/api.js
-        └── pages/
-            ├── CollectionList.jsx
-            ├── CollectionDetail.jsx
-            ├── SearchPlayground.jsx
-            └── InstanceStatus.jsx
+├── z-vector-component/        # @yuku123/z-vector-component（public，可 npm publish）
+│   ├── package.json           # peer: react19/antd6/icons6/router7（§8.4 版本线）
+│   ├── vite.config.js         # library mode → dist/index.js（es）
+│   └── src/
+│       ├── index.js           # 桶导出（ui + layout）
+│       ├── ui/                # PageHeader / EmptyState / ErrorState / LoadingState /
+│       │                      # StatusBadge / SearchInput / PagedTable / SectionHeader /
+│       │                      # TableToolbar / tokens —— props-only 零 fetch（§9.3）
+│       └── layout/index.jsx   # 通用左菜单架子 AdminShell（接 menuItems/appTitle props）
+└── z-vector-suit/             # @yuku123/z-vector-suit（private，不发布）
+    ├── package.json           # file:../z-vector-component + antd/axios 全家
+    ├── vite.config.mjs        # dev :3000，proxy → :6333
+    ├── index.html
+    ├── nginx.conf             # 生产分开发部署
+    ├── Dockerfile             # 多阶段 build → nginx
+    └── src/
+        ├── main.jsx           # 入口：ConfigProvider(zhCN + antdTheme)
+        ├── App.jsx            # BrowserRouter + AdminShell(component 包) + routeTable
+        ├── common/
+        │   ├── utils/         # request.js（axios 实例）/ jwt.js（预留）
+        │   └── components/LoginPage/   # 占位
+        └── console/           # z-vector 管理台（fetch /api/** 数据接线面）
+            ├── routes.jsx     # menuConfig + routeTable + appMeta
+            ├── services/api.js
+            └── pages/         # CollectionList / CollectionDetail / SearchPlayground / InstanceStatus
 ```
 
 ## 与 z-opc 关系（搬运台账）
+
+> ⚠ 2026-10-09 分包拆分后文件去向有变（ui/Layout → `z-vector-component/src/`，其余 →
+> `z-vector-suit/src/`，见上方目录结构）。本表为 feature001 迁移时点记录，按「不改史」保留。
 
 | 来源 | 去向 | 行数 | 改动 |
 | --- | --- | --- | --- |

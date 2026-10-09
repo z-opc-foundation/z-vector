@@ -3,7 +3,7 @@ import { Alert, Button, Card, Form, Input, InputNumber, Modal, Popconfirm, Selec
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { INDEX_TYPES, METRICS, NAME_PATTERN, vectorApi, vectorErrorText } from '../services/api.js'
-import { EmptyState, PageHeader } from '@/common/components/ui/index.js'
+import { EmptyState, PageHeader } from '@yuku123/z-vector-component'
 
 /**
  * 集合列表 —— GET /collections 只回名字，维度/点数/索引要逐个集合再打一次 GET /collections/{n}，

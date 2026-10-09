@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Alert, Button, Card, Descriptions, Space, Tag } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import { vectorApi, vectorErrorText } from '../services/api.js'
-import { PageHeader } from '@/common/components/ui/index.js'
+import { PageHeader } from '@yuku123/z-vector-component'
 
 /**
  * 实例状态 —— GET /__instance 的可视化。

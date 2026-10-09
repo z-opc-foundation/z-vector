@@ -3,7 +3,7 @@ import { Alert, Button, Card, Col, Descriptions, Input, Row, Space, Statistic, T
 import { ArrowLeftOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { vectorApi, vectorErrorText } from '../services/api.js'
-import { PageHeader } from '@/common/components/ui/index.js'
+import { PageHeader } from '@yuku123/z-vector-component'
 
 /**
  * 集合详情 —— GET /collections/{n} + /points/count 两次取数。

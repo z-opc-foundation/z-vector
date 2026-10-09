@@ -1,8 +1,8 @@
 import { Component } from 'react'
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom'
-import { AppLayout } from './common/components/Layout/index.jsx'
+import { AppLayout } from '@yuku123/z-vector-component'
 import { menuConfig, routeTable, appMeta } from './console/routes.jsx'
-import { EmptyState } from './common/components/ui/index.js'
+import { EmptyState } from '@yuku123/z-vector-component'
 
 class ErrorBoundary extends Component {
     constructor(props) { super(props); this.state = { err: null } }
