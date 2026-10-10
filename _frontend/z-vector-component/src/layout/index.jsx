@@ -59,24 +59,14 @@ export function AppLayout({
                 const {icon, color = '#7c3aed', label = appTitle} = appIcon
                 const node = (
                     <div style={{
-                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                        padding: '0 6px',
-                    }}>
-                        <div style={{
-                            width: 26, height: 26, borderRadius: 7,
-                            background: `linear-gradient(135deg, ${color}, ${shade(color, 0.7)})`,
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            color: '#fff', fontSize: 14, boxShadow: '0 2px 6px rgba(0,0,0,0.25)',
-                            overflow: 'hidden', flexShrink: 0,
-                        }}>{icon}</div>
-                        <span style={{
-                            fontSize: 12, fontWeight: 600, color: '#fff',
-                            lineHeight: 1.2, whiteSpace: 'nowrap',
-                            overflow: 'hidden', textOverflow: 'ellipsis',
-                        }}>{label}</span>
-                    </div>
+                        width: 36, height: 36, borderRadius: 9,
+                        background: `linear-gradient(135deg, ${color}, ${shade(color, 0.7)})`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        color: '#fff', fontSize: 20, boxShadow: '0 2px 6px rgba(0,0,0,0.25)',
+                        overflow: 'hidden',
+                    }}>{icon}</div>
                 )
-                return node
+                return <Tooltip title={label} placement="right">{node}</Tooltip>
             }
             return appShort
         }
