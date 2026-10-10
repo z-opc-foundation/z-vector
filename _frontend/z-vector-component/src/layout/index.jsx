@@ -124,8 +124,9 @@ export function AppLayout({
             </Sider>
             <Layout>
                 <Header style={{
-                    padding: '0 16px', background: '#fff',
+                    height: 48, lineHeight: '48px', padding: '0 16px', background: '#fff',
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    borderBottom: '1px solid #f1f5f9',
                 }}>
                     <span onClick={() => setCollapsed(!collapsed)} style={{ fontSize: 18, cursor: 'pointer' }}>
                         {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
