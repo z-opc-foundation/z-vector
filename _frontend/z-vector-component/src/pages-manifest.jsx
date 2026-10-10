@@ -25,15 +25,9 @@ export const appMeta = {
  * "object with keys {$$typeof, render}"。
  */
 export const menuConfig = [
-    {
-        key: '/collections',
-        label: '集合管理',
-        children: [
-            { key: '/collections', label: '集合列表' },
-        ],
-    },
-    { key: '/search',    label: '检索调试' },
-    { key: '/instance',  label: '实例状态' },
+    { key: '/collections', label: '集合列表' },
+    { key: '/search',      label: '检索调试' },
+    { key: '/instance',    label: '实例状态' },
 ]
 
 /**
