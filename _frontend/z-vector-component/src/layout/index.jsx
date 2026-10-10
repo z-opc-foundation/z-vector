@@ -53,6 +53,22 @@ export function AppLayout({
         navigate(key)
     }
 
+    // URL 即状态（lead 008 §11）：用 location.pathname 的最长菜单前缀作 selectedKey，
+    // /collections/demo_docs 也能点亮「集合列表」。key 收集自 items（含 children）。
+    const collectKeys = (items, acc = []) => {
+        for (const it of items || []) {
+            if (it?.key) acc.push(it.key)
+            if (it?.children) collectKeys(it.children, acc)
+        }
+        return acc
+    }
+    const selectedKey = (() => {
+        const keys = collectKeys(menuItems)
+        const p = location.pathname
+        return keys.filter((k) => p === k || p.startsWith(k + '/'))
+            .sort((a, b) => b.length - a.length)[0] || p
+    })()
+
     const renderBrand = () => {
         if (collapsed) {
             if (appIcon) {
@@ -90,7 +106,7 @@ export function AppLayout({
                     <Menu
                         theme="dark"
                         mode="inline"
-                        selectedKeys={[location.pathname]}
+                        selectedKeys={[selectedKey]}
                         items={menuItems}
                         onClick={handleMenuClick}
                     />
