@@ -3,7 +3,7 @@ import CollectionDetail from './pages/CollectionDetail.jsx'
 import SearchPlayground from './pages/SearchPlayground.jsx'
 import InstanceStatus from './pages/InstanceStatus.jsx'
 import ComponentDoc from './pages/ComponentDoc.jsx'
-import { ReadOutlined } from '@ant-design/icons'
+import { DatabaseOutlined, MonitorOutlined, ReadOutlined, ThunderboltOutlined } from '@ant-design/icons'
 
 /**
  * z-vector console 的菜单 + 路由清单（routes manifest）。
@@ -27,9 +27,9 @@ export const appMeta = {
  * "object with keys {$$typeof, render}"。
  */
 export const menuConfig = [
-    { key: '/collections', label: '集合列表' },
-    { key: '/search',      label: '检索调试' },
-    { key: '/instance',    label: '实例状态' },
+    { key: '/collections', label: '集合列表', icon: <DatabaseOutlined /> },
+    { key: '/search',      label: '检索调试', icon: <ThunderboltOutlined /> },
+    { key: '/instance',    label: '实例状态', icon: <MonitorOutlined /> },
     { key: '/_doc',        label: '组件文档', icon: <ReadOutlined /> },
 ]
 
