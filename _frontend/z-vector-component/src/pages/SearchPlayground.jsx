@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Card, Checkbox, Col, Empty, Input, InputNumber, Row, Select, Space, Table, Tag } from 'antd'
+import { Alert, Button, Card, Checkbox, Empty, Input, InputNumber, Select, Space, Table, Tag } from 'antd'
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useSearchParams } from 'react-router-dom'
 import { vectorApi, vectorErrorText } from '../services/api.js'
@@ -117,76 +117,73 @@ export default function SearchPlayground() {
         <div>
             <PageHeader title="向量检索"
                         subtitle="top-k ANN 查询（POST /collections/{name}/points/search；time_ms 由服务端真实测量，不是占位 0）" />
-            <Row gutter={12}>
-                <Col span={9}>
-                    <Card title="查询条件" size="small">
-                        <Space direction="vertical" style={{ width: '100%' }} size={10}>
-                            <Space.Compact style={{ width: '100%' }}>
-                                <Select style={{ width: '100%' }}
-                                        placeholder="选择集合"
-                                        loading={!collections.length && !error}
-                                        value={collection || undefined}
-                                        onChange={setCollection}
-                                        options={collections.map((c) => ({ value: c, label: c }))}
-                                        notFoundContent={<Empty description="没有集合，先去「向量集合」页建一个" />} />
-                                <Button onClick={loadCollections}>刷新</Button>
-                            </Space.Compact>
-                            <div>
-                                <span style={{ color: '#64748b', fontSize: 12 }}>
-                                    集合维度：{dimension ?? '未取到（集合还没选或详情读取失败）'}
-                                </span>
-                                <Button size="small" style={{ marginLeft: 8 }} onClick={randomVector}
-                                        disabled={!collection}>随机生成查询向量</Button>
-                            </div>
-                            <Input.TextArea rows={5} spellCheck={false}
-                                            value={vectorText}
-                                            onChange={(e) => setVectorText(e.target.value)}
-                                            placeholder='[0.1, 0.2, 0.3, 0.4]' />
-                            <Space>
-                                <span>top-k</span>
-                                <InputNumber min={1} max={100} value={topK} onChange={(v) => setTopK(v ?? 10)} />
-                                <Checkbox checked={buildIndex} onChange={(e) => setBuildIndex(e.target.checked)}>
-                                    查询前建索引
-                                </Checkbox>
-                            </Space>
-                            <Input spellCheck={false} value={filterText}
-                                   onChange={(e) => setFilterText(e.target.value)}
-                                   placeholder='可选 payload 过滤，如 {"lang":"zh"}' />
-                            <Button type="primary" icon={<ThunderboltOutlined />} loading={loading}
-                                    disabled={!collection || !vectorText.trim()} onClick={run}>
-                                执行检索
-                            </Button>
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                <Card title="查询条件" size="small">
+                    <Space direction="vertical" style={{ width: '100%' }} size={10}>
+                        <Space.Compact style={{ width: '100%' }}>
+                            <Select style={{ width: '100%' }}
+                                    placeholder="选择集合"
+                                    loading={!collections.length && !error}
+                                    value={collection || undefined}
+                                    onChange={setCollection}
+                                    options={collections.map((c) => ({ value: c, label: c }))}
+                                    notFoundContent={<Empty description="没有集合，先去「向量集合」页建一个" />} />
+                            <Button onClick={loadCollections}>刷新</Button>
+                        </Space.Compact>
+                        <div>
+                            <span style={{ color: '#64748b', fontSize: 12 }}>
+                                集合维度：{dimension ?? '未取到（集合还没选或详情读取失败）'}
+                            </span>
+                            <Button size="small" style={{ marginLeft: 8 }} onClick={randomVector}
+                                    disabled={!collection}>随机生成查询向量</Button>
+                        </div>
+                        <Input.TextArea rows={5} spellCheck={false}
+                                        value={vectorText}
+                                        onChange={(e) => setVectorText(e.target.value)}
+                                        placeholder='[0.1, 0.2, 0.3, 0.4]' />
+                        <Space>
+                            <span>top-k</span>
+                            <InputNumber min={1} max={100} value={topK} onChange={(v) => setTopK(v ?? 10)} />
+                            <Checkbox checked={buildIndex} onChange={(e) => setBuildIndex(e.target.checked)}>
+                                查询前建索引
+                            </Checkbox>
                         </Space>
-                    </Card>
-                </Col>
-                <Col span={15}>
-                    <Card title="命中结果" size="small"
-                          extra={
-                              response
-                                  ? <Space size={6}>
-                                      <Tag>{`result ${hits.length} 条`}</Tag>
-                                      {typeof response.time_ms === 'number' &&
-                                          <Tag color="blue">{`耗时 ${response.time_ms} ms`}</Tag>}
-                                    </Space>
-                                  : null
-                          }>
-                        {error ? (
-                            <Alert type="error" showIcon message={`检索失败：${vectorErrorText(error)}`}
-                                   description="后端把 VectorException 统一转成 400 + message，这里的文案就是它原话。" />
-                        ) : !response ? (
-                            <EmptyState title="还没有发起过检索"
-                                        description="选集合 → 填查询向量（或用「随机生成」）→ 执行检索。结果表在后端返回前一直是空的，不会先摆几行占位。" />
-                        ) : (
-                            <Table size="small"
-                                   rowKey={(r, i) => `${r.id}-${i}`}
-                                   loading={loading}
-                                   dataSource={hits}
-                                   pagination={false}
-                                   columns={[
-                                       { title: '排名', key: 'rank', width: 60, render: (_, __, i) => i + 1 },
-                                       { title: '向量 ID', dataIndex: 'id', key: 'id' },
-                                       {
-                                           title: '距离 (score)', dataIndex: 'score', key: 'score', width: 140,
+                        <Input spellCheck={false} value={filterText}
+                               onChange={(e) => setFilterText(e.target.value)}
+                               placeholder='可选 payload 过滤，如 {"lang":"zh"}' />
+                        <Button type="primary" icon={<ThunderboltOutlined />} loading={loading}
+                                disabled={!collection || !vectorText.trim()} onClick={run}>
+                            执行检索
+                        </Button>
+                    </Space>
+                </Card>
+                <Card title="命中结果" size="small"
+                      extra={
+                          response
+                              ? <Space size={6}>
+                                  <Tag>{`result ${hits.length} 条`}</Tag>
+                                  {typeof response.time_ms === 'number' &&
+                                      <Tag color="blue">{`耗时 ${response.time_ms} ms`}</Tag>}
+                                </Space>
+                              : null
+                      }>
+                    {error ? (
+                        <Alert type="error" showIcon message={`检索失败：${vectorErrorText(error)}`}
+                               description="后端把 VectorException 统一转成 400 + message，这里的文案就是它原话。" />
+                    ) : !response ? (
+                        <EmptyState title="还没有发起过检索"
+                                    description="选集合 → 填查询向量（或用「随机生成」）→ 执行检索。结果表在后端返回前一直是空的，不会先摆几行占位。" />
+                    ) : (
+                        <Table size="small"
+                               rowKey={(r, i) => `${r.id}-${i}`}
+                               loading={loading}
+                               dataSource={hits}
+                               pagination={false}
+                               columns={[
+                                   { title: '排名', key: 'rank', width: 60, render: (_, __, i) => i + 1 },
+                                   { title: '向量 ID', dataIndex: 'id', key: 'id' },
+                                   {
+                                       title: '距离 (score)', dataIndex: 'score', key: 'score', width: 140,
                                            // z-vector 内部统一成"越小越近"，这里只格式化不改值
                                            render: (v) => (typeof v === 'number' ? v.toFixed(6) : String(v))
                                        },
@@ -202,15 +199,13 @@ export default function SearchPlayground() {
                                    }}
                             />
                         )}
-                    </Card>
-                    <Card title="原始请求 / 响应（证明页面渲染的就是后端给的那份）" size="small"
-                          style={{ marginTop: 12 }}>
-                        <pre style={{ margin: 0, maxHeight: 260, overflow: 'auto', fontSize: 12 }}>
-                            {response || lastRequest ? sample : '（还没有请求）'}
-                        </pre>
-                    </Card>
-                </Col>
-            </Row>
+                </Card>
+                <Card title="原始请求 / 响应（证明页面渲染的就是后端给的那份）" size="small">
+                    <pre style={{ margin: 0, maxHeight: 260, overflow: 'auto', fontSize: 12 }}>
+                        {response || lastRequest ? sample : '（还没有请求）'}
+                    </pre>
+                </Card>
+            </Space>
         </div>
     )
 }
