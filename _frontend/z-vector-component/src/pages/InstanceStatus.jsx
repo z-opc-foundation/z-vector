@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react'
 import { Alert, Button, Card, Descriptions, Space, Tag } from 'antd'
 import { ReloadOutlined } from '@ant-design/icons'
 import { vectorApi, vectorErrorText } from '../services/api.js'
-import { PageHeader } from '@yuku123/z-vector-component'
 
 /**
  * 实例状态 —— GET /__instance 的可视化。
@@ -45,8 +44,6 @@ export default function InstanceStatus() {
 
     return (
         <div>
-            <PageHeader title="实例与端口"
-                        subtitle="z-vector-server 自检接口 GET /__instance —— 字段全在这一条，不依赖 /actuator/mappings" />
             <Card extra={
                 <Space>
                     <Button icon={<ReloadOutlined />} loading={loading} onClick={fetch}>刷新</Button>

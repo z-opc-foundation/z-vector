@@ -5,7 +5,6 @@ import remarkGfm from 'remark-gfm'
 import rehypeSlug from 'rehype-slug'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { PageHeader } from '@yuku123/z-vector-component'
 import docMarkdown from '../DOC.md?raw'
 
 const TOC_WIDTH = 240
@@ -110,12 +109,6 @@ export default function ComponentDoc() {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
-            <PageHeader
-                title="组件文档"
-                breadcrumb={[{ label: 'z-vector' }, { label: '组件文档' }]}
-                extra={<span style={{ fontSize: 12, color: '#94a3b8' }}>DOC.md → 实时渲染</span>}
-            />
-
             <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', minHeight: 0 }}>
                 <aside
                     ref={tocRef}
