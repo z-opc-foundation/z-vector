@@ -41,6 +41,7 @@ export function AppLayout({
                              menuItems = [],
                              appTitle = 'One Company',
                              appShort = 'OC',
+                             appVersion,
                              appIcon,
                              headerExtra,
                              loading = false,
@@ -86,8 +87,17 @@ export function AppLayout({
             }
             return appShort
         }
-        // expanded: text only (explicit white + bold for visibility on dark sider)
-        return <span style={{color: '#fff', fontWeight: 600, fontSize: 16}}>{appTitle}</span>
+        // 展开：appTitle [ + " @ " + appVersion ]（lead 008 §12 规范）
+        return (
+            <span style={{color: '#fff', fontWeight: 600, fontSize: 16, whiteSpace: 'nowrap'}}>
+                {appTitle}
+                {appVersion && (
+                    <span style={{
+                        color: 'rgba(255,255,255,0.55)', fontWeight: 400, fontSize: 12, marginLeft: 4,
+                    }}>@{appVersion}</span>
+                )}
+            </span>
+        )
     }
 
     return (
