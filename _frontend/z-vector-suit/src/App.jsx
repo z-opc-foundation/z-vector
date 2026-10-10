@@ -45,6 +45,7 @@ export default function App() {
                             menuItems={menuConfig}
                             appTitle={appMeta.title}
                             appShort={appMeta.short}
+                            appIcon={{ icon: <img src="/icon.png" alt={appMeta.title} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 }} />, color: '#7c3aed', label: appMeta.title }}
                             headerExtra={<span style={{fontSize: 12, color: '#64748b'}}>v1.0.5</span>}
                         />
                     }>
