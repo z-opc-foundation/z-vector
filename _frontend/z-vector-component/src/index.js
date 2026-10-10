@@ -9,3 +9,6 @@
 export * from './ui/index.js'
 export { AppLayout } from './layout/index.jsx'
 export { default as LoginPage } from './pages/LoginPage.jsx'
+
+// §8.7 域目录清退：vector 域 App 挂载点
+export { default as VectorApp } from './pages/VectorApp.jsx'

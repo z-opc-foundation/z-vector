@@ -46,5 +46,6 @@ export const routes = [
     { path: '/z-vector/search',            element: <SearchPlayground /> },
     { path: '/z-vector/instance',          element: <InstanceStatus /> },
     { path: '/z-vector/docs',              element: <ComponentDoc /> },
+    { path: '/z-vector/:rest*', Component: VectorApp },
 ]
 
