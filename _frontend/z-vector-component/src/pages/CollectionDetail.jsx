@@ -84,7 +84,7 @@ export default function CollectionDetail() {
         <div>
             <PageHeader title={`集合详情：${name || '-'}`}
                         subtitle="z-vector 集合的维度 / 度量 / 索引配置与向量规模"
-                        extra={<Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/collections')}>返回列表</Button>} />
+                        extra={<Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/z-vector/collections')}>返回列表</Button>} />
             {error ? (
                 <Card>
                     <Alert type="error" showIcon
@@ -99,7 +99,7 @@ export default function CollectionDetail() {
                                   <Space>
                                       <Button icon={<ReloadOutlined />} loading={loading} onClick={fetch}>刷新</Button>
                                       <Button type="primary"
-                                              onClick={() => navigate(`/search?collection=${encodeURIComponent(name)}`)}>
+                                              onClick={() => navigate(`/z-vector/search?collection=${encodeURIComponent(name)}`)}>
                                           去检索
                                       </Button>
                                   </Space>

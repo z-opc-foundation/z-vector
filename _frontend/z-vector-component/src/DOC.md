@@ -8,10 +8,10 @@ z-vector 是一个仿 Qdrant 风格 REST 的向量数据库（Java 1.8 + JDK Htt
 
 | 页面 | 路径 | 作用 |
 |---|---|---|
-| 集合列表 | `/collections` | 列表 + 新建 + 详情跳转 + 检索跳转 + 删除 |
-| 集合详情 | `/collections/:name` | 元信息 + 点数 + upsert（PUT /points） |
-| 检索调试 | `/search` | top-k ANN 查询（POST /points/search） |
-| 实例状态 | `/instance` | port / uptime / data_dir / jvm / 内存 |
+| 集合列表 | `/z-vector/collections` | 列表 + 新建 + 详情跳转 + 检索跳转 + 删除 |
+| 集合详情 | `/z-vector/collections/:name` | 元信息 + 点数 + upsert（PUT /points） |
+| 检索调试 | `/z-vector/search` | top-k ANN 查询（POST /points/search） |
+| 实例状态 | `/z-vector/instance` | port / uptime / data_dir / jvm / 内存 |
 
 ## 2. 后端 API（Qdrant 风格）
 
@@ -52,8 +52,8 @@ type InstanceResp = {
 
 - 右上角"刷新"重发 `GET /collections`
 - "新建集合"打开 Modal：name 字段（正则 `[a-zA-Z0-9_-]+`）+ dimension（必填 1-8192）+ metric（默认 COSINE）+ index_type（默认 FLAT）
-- 列表"详情" → `/collections/:name`
-- 列表"检索" → `/search?collection=:name`（自动填入集合）
+- 列表"详情" → `/z-vector/collections/:name`
+- 列表"检索" → `/z-vector/search?collection=:name`（自动填入集合）
 - 列表"删除" Popconfirm 确认后 `DELETE /collections/:name`
 - 列表第一行**先列表再并发取详情**：GET /collections 只回名字，dimension/metric/points_count 要逐个集合再打一次 GET /collections/{n}，并发发起，失败的行单独标"详情失败"不让整张表变空
 

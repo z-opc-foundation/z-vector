@@ -20,9 +20,9 @@ function NotFound() {
     return (
         <EmptyState
             title="页面不存在"
-            description="路由表里没有这条路径。回到集合管理开始：左侧菜单「集合管理 → 集合列表」。"
+            description="路由表里没有这条路径。回到 z-vector 集合列表：左侧菜单「集合列表」。"
             actionText="去集合列表"
-            onAction={() => { window.location.href = '/collections' }}
+            onAction={() => { window.location.href = '/z-vector/collections' }}
         />
     )
 }
@@ -49,7 +49,7 @@ export default function App() {
                             appIcon={{ icon: <img src="/icon.png" alt={appMeta.title} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 }} />, color: '#7c3aed', label: appMeta.title }}
                         />
                     }>
-                        <Route path="/" element={<Navigate to="/collections" replace />} />
+                        <Route path="/" element={<Navigate to={menuConfig[0].key} replace />} />
                         {routeTable.map((r) => (
                             <Route key={r.path} path={r.path} element={r.element} />
                         ))}

@@ -114,7 +114,7 @@ export default function CollectionList() {
                                 title: '集合名', dataIndex: 'name', key: 'name',
                                 render: (v, r) => r.detailError
                                     ? <span>{v} <Tag color="warning">详情失败</Tag></span>
-                                    : <a onClick={() => navigate(`/collections/${encodeURIComponent(v)}`)}>{v}</a>
+                                    : <a onClick={() => navigate(`/z-vector/collections/${encodeURIComponent(v)}`)}>{v}</a>
                             },
                             {
                                 title: '维度', dataIndex: 'dimension', key: 'dimension', width: 90,
@@ -132,11 +132,11 @@ export default function CollectionList() {
                                 render: (_, r) => (
                                     <Space size={0}>
                                         <Button type="link" size="small"
-                                                onClick={() => navigate(`/collections/${encodeURIComponent(r.name)}`)}>
+                                                onClick={() => navigate(`/z-vector/collections/${encodeURIComponent(r.name)}`)}>
                                             详情
                                         </Button>
                                         <Button type="link" size="small"
-                                                onClick={() => navigate(`/search?collection=${encodeURIComponent(r.name)}`)}>
+                                                onClick={() => navigate(`/z-vector/search?collection=${encodeURIComponent(r.name)}`)}>
                                             检索
                                         </Button>
                                         <Popconfirm title={`删除集合 ${r.name}？`}

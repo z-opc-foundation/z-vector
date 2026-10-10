@@ -27,10 +27,10 @@ export const appMeta = {
  * "object with keys {$$typeof, render}"。
  */
 export const menuConfig = [
-    { key: '/collections', label: '集合列表', icon: <DatabaseOutlined /> },
-    { key: '/search',      label: '检索调试', icon: <ThunderboltOutlined /> },
-    { key: '/instance',    label: '实例状态', icon: <MonitorOutlined /> },
-    { key: '/_doc',        label: '组件文档', icon: <ReadOutlined /> },
+    { key: '/z-vector/collections', label: '集合列表', icon: <DatabaseOutlined /> },
+    { key: '/z-vector/search',      label: '检索调试', icon: <ThunderboltOutlined /> },
+    { key: '/z-vector/instance',    label: '实例状态', icon: <MonitorOutlined /> },
+    { key: '/z-vector/_doc',        label: '组件文档', icon: <ReadOutlined /> },
 ]
 
 /**
@@ -38,10 +38,10 @@ export const menuConfig = [
  * key 用 path 字符串，App.jsx 用 Route path 渲染。
  */
 export const routeTable = [
-    { path: '/collections',       element: <CollectionList /> },
-    { path: '/collections/:name', element: <CollectionDetail /> },
-    { path: '/search',            element: <SearchPlayground /> },
-    { path: '/instance',          element: <InstanceStatus /> },
-    { path: '/_doc',              element: <ComponentDoc /> },
+    { path: '/z-vector/collections',       element: <CollectionList /> },
+    { path: '/z-vector/collections/:name', element: <CollectionDetail /> },
+    { path: '/z-vector/search',            element: <SearchPlayground /> },
+    { path: '/z-vector/instance',          element: <InstanceStatus /> },
+    { path: '/z-vector/_doc',              element: <ComponentDoc /> },
 ]
 
