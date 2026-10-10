@@ -3,7 +3,8 @@ import CollectionDetail from './pages/CollectionDetail.jsx'
 import SearchPlayground from './pages/SearchPlayground.jsx'
 import InstanceStatus from './pages/InstanceStatus.jsx'
 import ComponentDoc from './pages/ComponentDoc.jsx'
-import { DatabaseOutlined, MonitorOutlined, ReadOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import HomePage from './pages/HomePage.jsx'
+import { CloudServerOutlined, DatabaseOutlined, HomeOutlined, ReadOutlined, ThunderboltOutlined } from '@ant-design/icons'
 
 /**
  * z-vector console 的菜单 + 路由清单（routes manifest）。
@@ -27,9 +28,10 @@ export const appMeta = {
  * "object with keys {$$typeof, render}"。
  */
 export const menuConfig = [
+    { key: '/z-vector/home',       label: '首页',       icon: <HomeOutlined /> },
     { key: '/z-vector/collections', label: '集合列表', icon: <DatabaseOutlined /> },
     { key: '/z-vector/search',      label: '检索调试', icon: <ThunderboltOutlined /> },
-    { key: '/z-vector/instance',    label: '实例状态', icon: <MonitorOutlined /> },
+    { key: '/z-vector/instance',    label: '实例状态', icon: <CloudServerOutlined /> },
     { key: '/z-vector/docs',        label: '组件文档', icon: <ReadOutlined /> },
 ]
 
@@ -38,6 +40,7 @@ export const menuConfig = [
  * key 用 path 字符串，App.jsx 用 Route path 渲染。
  */
 export const routeTable = [
+    { path: '/z-vector/home',             element: <HomePage /> },
     { path: '/z-vector/collections',       element: <CollectionList /> },
     { path: '/z-vector/collections/:name', element: <CollectionDetail /> },
     { path: '/z-vector/search',            element: <SearchPlayground /> },

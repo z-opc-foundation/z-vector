@@ -1,5 +1,5 @@
-import { Layout, Menu, Spin, Tooltip } from 'antd'
-import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons'
+import { Avatar, Button, Dropdown, Layout, Menu, Spin, Tooltip } from 'antd'
+import { DownOutlined, LoginOutlined, MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 
@@ -43,6 +43,7 @@ export function AppLayout({
                              appShort = 'OC',
                              appVersion,
                              appIcon,
+                             appUser,
                              headerExtra,
                              loading = false,
                          }) {
@@ -131,7 +132,39 @@ export function AppLayout({
                     <span onClick={() => setCollapsed(!collapsed)} style={{ fontSize: 18, cursor: 'pointer' }}>
                         {collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
                     </span>
-                    {headerExtra}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        {appUser && (
+                            <Dropdown
+                                menu={{
+                                    items: [
+                                        { key: 'profile', label: `${appUser.name}（${appUser.role || '用户'}）`, disabled: true },
+                                        { type: 'divider' },
+                                        { key: 'logout', label: '退出登录', onClick: () => {
+                                            localStorage.removeItem('token')
+                                            localStorage.removeItem('userInfo')
+                                            window.location.href = '/z-vector/login'
+                                        } },
+                                    ],
+                                }}
+                                placement="bottomRight"
+                            >
+                                <span style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                    <Avatar size={28} style={{ background: '#7c3aed' }}>
+                                        {(appUser.name || '?').slice(0, 1).toUpperCase()}
+                                    </Avatar>
+                                    <span style={{ fontSize: 13, color: '#0f172a' }}>{appUser.name}</span>
+                                    <DownOutlined style={{ fontSize: 10, color: '#94a3b8' }} />
+                                </span>
+                            </Dropdown>
+                        )}
+                        {!appUser && (
+                            <Button type="primary" size="small" icon={<LoginOutlined />}
+                                    onClick={() => { window.location.href = '/z-vector/login' }}>
+                                登录
+                            </Button>
+                        )}
+                        {headerExtra}
+                    </div>
                 </Header>
                 <Content style={{ margin: 16, padding: 24, background: '#fff', minHeight: 280 }}>
                     <Outlet />

@@ -8,3 +8,4 @@
 
 export * from './ui/index.js'
 export { AppLayout } from './layout/index.jsx'
+export { default as LoginPage } from './pages/LoginPage.jsx'
