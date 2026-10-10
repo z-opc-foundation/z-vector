@@ -54,21 +54,23 @@ export function AppLayout({
     }
 
     const renderBrand = () => {
-        if (appIcon) {
-            const { icon, color = '#7c3aed', label = appTitle } = appIcon
-            const node = (
-                <div style={{
-                    width: 36, height: 36, borderRadius: 10,
-                    background: `linear-gradient(135deg, ${color}, ${shade(color, 0.7)})`,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    color: '#fff', fontSize: 20, boxShadow: '0 2px 6px rgba(0,0,0,0.25)',
-                }}>{icon}</div>
-            )
-            return collapsed
-                ? <Tooltip title={label} placement="right">{node}</Tooltip>
-                : node
+        if (collapsed) {
+            if (appIcon) {
+                const { icon, color = '#7c3aed', label = appTitle } = appIcon
+                const node = (
+                    <div style={{
+                        width: 36, height: 36, borderRadius: 10,
+                        background: `linear-gradient(135deg, ${color}, ${shade(color, 0.7)})`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        color: '#fff', fontSize: 20, boxShadow: '0 2px 6px rgba(0,0,0,0.25)',
+                    }}>{icon}</div>
+                )
+                return <Tooltip title={label} placement="right">{node}</Tooltip>
+            }
+            return appShort
         }
-        return collapsed ? appShort : appTitle
+        // expanded: text only
+        return appTitle
     }
 
     return (
