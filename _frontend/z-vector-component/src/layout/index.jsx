@@ -70,8 +70,8 @@ export function AppLayout({
             }
             return appShort
         }
-        // expanded: text only
-        return appTitle
+        // expanded: text only (explicit white + bold for visibility on dark sider)
+        return <span style={{color: '#fff', fontWeight: 600, fontSize: 16}}>{appTitle}</span>
     }
 
     return (
