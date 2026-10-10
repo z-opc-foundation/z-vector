@@ -79,7 +79,6 @@ export default function CollectionList() {
 
     return (
         <div>
-            <PageHeader title="向量集合" />
             <Card
                 extra={
                     <Space>
