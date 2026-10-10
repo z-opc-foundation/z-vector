@@ -10,7 +10,7 @@ import { CloudServerOutlined, DatabaseOutlined, HomeOutlined, ReadOutlined, Thun
  * z-vector console 的菜单 + 路由清单（routes manifest）。
  * <p>
  * 这是「通用左菜单架子 AdminShell」的第一个消费方。
- * App.jsx 不直接 import 任何 z-vector 页面，而是从这里读 menuItems + routeTable。
+ * App.jsx 不直接 import 任何 z-vector 页面，而是从这里读 menuItems + routes。
  * 替换 z-* 仓时只改本文件，App.jsx 不动一行。
  */
 export const appMeta = {
@@ -39,7 +39,7 @@ export const menuConfig = [
  * 路由表（react-router 6+ Route 元素格式）。
  * key 用 path 字符串，App.jsx 用 Route path 渲染。
  */
-export const routeTable = [
+export const routes = [
     { path: '/z-vector/home',             element: <HomePage /> },
     { path: '/z-vector/collections',       element: <CollectionList /> },
     { path: '/z-vector/collections/:name', element: <CollectionDetail /> },

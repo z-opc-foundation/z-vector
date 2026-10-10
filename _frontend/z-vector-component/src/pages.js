@@ -3,4 +3,4 @@
  * suit 独立跑与宿主重组（主壳 domainRoutes）都从这里读。
  */
 export { configureVector } from './services/api.js'
-export { appMeta, menuConfig, routeTable } from './pages-manifest.jsx'
+export { appMeta, menuConfig, routes } from './pages-manifest.jsx'

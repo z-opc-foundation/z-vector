@@ -3,7 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AppLayout, EmptyState, LoginPage } from '@yuku123/z-vector-component'
 // 2026-10-09 pages 归位（lead 005 §9.3）：页面+api 迁 component 的 ./pages entry，
 // suit 只留壳——从 '@yuku123/z-vector-component/pages' 读 manifest。
-import { menuConfig, routeTable, appMeta } from '@yuku123/z-vector-component/pages'
+import { menuConfig, routes, appMeta } from '@yuku123/z-vector-component/pages'
 
 class ErrorBoundary extends Component {
     constructor(props) { super(props); this.state = { err: null } }
@@ -73,7 +73,7 @@ function ProtectedShell() {
 /**
  * 通用左菜单架子 AdminShell 的组装点。
  * <ul>
- *   <li>菜单 + 路由表全部数据驱动（来自 menuConfig / routeTable）</li>
+ *   <li>菜单 + 路由表全部数据驱动（来自 menuConfig / routes）</li>
  *   <li>App.jsx 本身零业务：换 z-* 仓只要改 manifest 即可，App.jsx 不动</li>
  *   <li>登录 + 鉴权 + user 区域全部走 lead 008 §16 模板</li>
  * </ul>
@@ -86,7 +86,7 @@ export default function App() {
                     <Route path="/z-vector/login" element={<LoginRoute />} />
                     <Route element={<ProtectedShell />}>
                         <Route path="/" element={<Navigate to={menuConfig[0].key} replace />} />
-                        {routeTable.map((r) => (
+                        {routes.map((r) => (
                             <Route key={r.path} path={r.path} element={r.element} />
                         ))}
                         <Route path="*" element={<NotFound />} />
