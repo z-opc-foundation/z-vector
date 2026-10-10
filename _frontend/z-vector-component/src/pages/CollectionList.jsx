@@ -14,6 +14,7 @@ export default function CollectionList() {
     const [rows, setRows] = useState([])
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState(null)
+    const [filter, setFilter] = useState('')
     const [creating, setCreating] = useState(false)
     const [submitting, setSubmitting] = useState(false)
     const [form] = Form.useForm()
@@ -78,13 +79,16 @@ export default function CollectionList() {
 
     return (
         <div>
-            <PageHeader
-                title="向量集合"
-                subtitle="z-vector 集合台账（数据源 GET /collections，由 vite dev proxy 转发到 z-vector-server :6333；详见 _doc/001_feature/001_管理台前端/）"
-            />
+            <PageHeader title="向量集合" />
             <Card
                 extra={
                     <Space>
+                        <Input.Search
+                            allowClear
+                            placeholder="按集合名过滤"
+                            style={{width: 220}}
+                            onChange={(e) => setFilter(e.target.value.trim().toLowerCase())}
+                        />
                         <Button icon={<ReloadOutlined />} loading={loading} onClick={fetch}>刷新</Button>
                         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>新建集合</Button>
                     </Space>
@@ -99,8 +103,13 @@ export default function CollectionList() {
                         size="small"
                         rowKey={(r) => r.name}
                         loading={loading}
-                        dataSource={rows}
-                        pagination={false}
+                        dataSource={rows.filter((r) => !filter || r.name.toLowerCase().includes(filter))}
+                        pagination={{
+                            pageSize: 20,
+                            showSizeChanger: true,
+                            pageSizeOptions: ['10', '20', '50', '100'],
+                            showTotal: (t) => `共 ${t} 条`,
+                        }}
                         columns={[
                             {
                                 title: '集合名', dataIndex: 'name', key: 'name',
