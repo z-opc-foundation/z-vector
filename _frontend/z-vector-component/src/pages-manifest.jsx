@@ -30,7 +30,7 @@ export const menuConfig = [
     { key: '/z-vector/collections', label: '集合列表', icon: <DatabaseOutlined /> },
     { key: '/z-vector/search',      label: '检索调试', icon: <ThunderboltOutlined /> },
     { key: '/z-vector/instance',    label: '实例状态', icon: <MonitorOutlined /> },
-    { key: '/z-vector/_doc',        label: '组件文档', icon: <ReadOutlined /> },
+    { key: '/z-vector/docs',        label: '组件文档', icon: <ReadOutlined /> },
 ]
 
 /**
@@ -42,6 +42,6 @@ export const routeTable = [
     { path: '/z-vector/collections/:name', element: <CollectionDetail /> },
     { path: '/z-vector/search',            element: <SearchPlayground /> },
     { path: '/z-vector/instance',          element: <InstanceStatus /> },
-    { path: '/z-vector/_doc',              element: <ComponentDoc /> },
+    { path: '/z-vector/docs',              element: <ComponentDoc /> },
 ]
 
