@@ -4,7 +4,7 @@ import { ConfigProvider } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import 'antd/dist/reset.css'
 import App from './App.jsx'
-import { antdTheme } from '@yuku123/z-vector-component'
+import { antdTheme, configureVector } from '@yuku123/z-vector-component'
 
 /**
  * 阶段一（feature001）入口：
@@ -14,6 +14,10 @@ import { antdTheme } from '@yuku123/z-vector-component'
  *   <li>不挂任何 auth provider：z-vector 当前无登录，admin shell 直接渲染</li>
  * </ul>
  */
+// 注入 axios baseURL = '/api'，与 vite proxy / nginx 反代的同源前缀对齐；
+// 组件侧默认就是 '/api'，这里显式调一次以便宿主改前缀时只改这一行。
+configureVector('/api')
+
 createRoot(document.getElementById('root')).render(
     <StrictMode>
         <ConfigProvider locale={zhCN} theme={antdTheme}>

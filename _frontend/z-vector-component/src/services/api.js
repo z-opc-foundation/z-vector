@@ -18,15 +18,23 @@ import request from '@/common'
  * 失败时后端返回 {status:"error", code, message} 且 HTTP 状态码同 code（axios 会走 reject 分支）。
  */
 export const vectorApi = {
-    instance: () => request.get('/vector/__instance'),
-    listCollections: () => request.get('/vector/collections'),
-    collection: (name) => request.get(`/vector/collections/${encodeURIComponent(name)}`),
-    pointCount: (name) => request.get(`/vector/collections/${encodeURIComponent(name)}/points/count`),
-    createCollection: (name, body) => request.put(`/vector/collections/${encodeURIComponent(name)}`, body),
-    deleteCollection: (name) => request.delete(`/vector/collections/${encodeURIComponent(name)}`),
+    instance: () => request.get('/vector/__instance').then((r) => r.data),
+    listCollections: () => request.get('/vector/collections').then((r) => r.data),
+    collection: (name) => request.get(`/vector/collections/${encodeURIComponent(name)}`).then((r) => r.data),
+    pointCount: (name) => request.get(`/vector/collections/${encodeURIComponent(name)}/points/count`).then((r) => r.data),
+    createCollection: (name, body) => request.put(`/vector/collections/${encodeURIComponent(name)}`, body).then((r) => r.data),
+    deleteCollection: (name) => request.delete(`/vector/collections/${encodeURIComponent(name)}`).then((r) => r.data),
     upsertPoints: (name, points) =>
-        request.put(`/vector/collections/${encodeURIComponent(name)}/points`, {points}),
-    search: (name, body) => request.post(`/vector/collections/${encodeURIComponent(name)}/points/search`, body),
+        request.put(`/vector/collections/${encodeURIComponent(name)}/points`, {points}).then((r) => r.data),
+    search: (name, body) => request.post(`/vector/collections/${encodeURIComponent(name)}/points/search`, body).then((r) => r.data),
+}
+
+/**
+ * 让宿主（suit / 主壳 domainRoutes）注入 API 前缀：所有 vectorApi 路径拼到 `{prefix}{path}`。
+ * 默认空串 → 路径就是 '/vector/...'
+ */
+export function configureVector(apiBase = '/api') {
+    request.defaults.baseURL = apiBase
 }
 
 /**

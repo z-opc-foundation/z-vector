@@ -4,6 +4,7 @@ import SearchPlayground from './pages/SearchPlayground.jsx'
 import InstanceStatus from './pages/InstanceStatus.jsx'
 import ComponentDoc from './pages/ComponentDoc.jsx'
 import HomePage from './pages/HomePage.jsx'
+import { VectorApp } from './index.js'
 import { CloudServerOutlined, DatabaseOutlined, HomeOutlined, ReadOutlined, ThunderboltOutlined } from '@ant-design/icons'
 
 /**

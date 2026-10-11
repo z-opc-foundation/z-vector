@@ -33,6 +33,7 @@ export default defineConfig({
             '/api/collections': { target: 'http://localhost:6333', changeOrigin: true, rewrite: p => p.replace(/^\/api/, '') },
             '/api/health':      { target: 'http://localhost:6333', changeOrigin: true, rewrite: p => p.replace(/^\/api/, '') },
             '/api/__instance':  { target: 'http://localhost:6333', changeOrigin: true, rewrite: p => p.replace(/^\/api/, '') },
+            '/api/vector':      { target: 'http://localhost:6333', changeOrigin: true, rewrite: p => p.replace(/^\/api\/vector/, '') },
         },
     },
 })

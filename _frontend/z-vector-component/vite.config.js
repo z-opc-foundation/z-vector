@@ -7,6 +7,11 @@ import path from 'path';
 // 引用方：同仓 _frontend/z-vector-suit/（file: 协议）或外部项目（npm install）
 export default defineConfig({
     plugins: [react()],
+    resolve: {
+        alias: {
+            '@': path.resolve(__dirname, 'src'),
+        },
+    },
     build: {
         lib: {
             entry: {

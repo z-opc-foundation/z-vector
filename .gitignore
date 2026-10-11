@@ -37,3 +37,6 @@
 /.cache/
 **/__pycache__/
 *.pyc
+
+# ===== 本地 zvector-server 数据目录(起服务时 ZVECTOR_DATA_DIR 指这里) =====
+/_tmp-zvector/

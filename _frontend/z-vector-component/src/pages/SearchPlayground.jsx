@@ -3,7 +3,7 @@ import { Alert, Button, Card, Checkbox, Empty, Input, InputNumber, Select, Space
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useSearchParams } from 'react-router-dom'
 import { vectorApi, vectorErrorText } from '../services/api.js'
-import { EmptyState } from '@yuku123/z-vector-component'
+import { EmptyState } from '../ui/index.js'
 
 /**
  * 向量检索 —— 真发一次 POST /collections/{n}/points/search，把后端给的 result 原样渲染。

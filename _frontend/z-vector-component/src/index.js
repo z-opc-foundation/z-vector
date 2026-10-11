@@ -12,3 +12,7 @@ export { default as LoginPage } from './pages/LoginPage.jsx'
 
 // §8.7 域目录清退：vector 域 App 挂载点
 export { default as VectorApp } from './pages/VectorApp.jsx'
+
+// API 装配：宿主（suit / 主壳 domainRoutes）启动时调一次 configureVector('/api' 或其他)，
+// 让所有 vectorApi 的相对路径都拼到同一前缀，与 vite proxy / nginx 反代同源。
+export { configureVector, vectorApi, vectorErrorText, NAME_PATTERN, METRICS, INDEX_TYPES } from './services/api.js'
