@@ -1,6 +1,9 @@
 import { Component, useEffect, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
-import { AppLayout, EmptyState, LoginPage } from '@yuku123/z-vector-component'
+// lead 008 §6 单一真源：AppLayout 直接从 _shared 取，z-vector-component 不再保留副本
+// （component/src/layout/index.jsx 已退化为 re-export 兼容旧 npm 调用方）
+import { AppLayout } from '../../../../_shared/z-frontend-common-local/dist/z-frontend-common.es.js'
+import { EmptyState, LoginPage } from '@yuku123/z-vector-component'
 // 2026-10-09 pages 归位（lead 005 §9.3）：页面+api 迁 component 的 ./pages entry，
 // suit 只留壳——从 '@yuku123/z-vector-component/pages' 读 manifest。
 import { menuConfig, routes, appMeta } from '@yuku123/z-vector-component/pages'
