@@ -1,0 +1,63 @@
+# 生产同源 nginx 配置（feature001 阶段一）
+# 静态托管 _frontend/dist + 反代三段 /api/* 路径到 z-vector-server :6333。
+#
+# 为什么用 /api/ 前缀：浏览器刷新 /collections/demo 这种深链时，前端 SPA 路由要拿到
+# index.html。如果让 nginx 也代理 /collections/* 到后端，刷新就拿到 JSON 而不是 SPA。
+# /api/ 前缀把后端调用与 SPA 路由完全隔离。
+#
+# Z_VECTOR_API_UPSTREAM 由 nginx 官方 entrypoint 的 envsubst 注入：
+#   docker run / k8s 里默认 z-vector-server:6333（跨 Pod 走 Service 名）
+#   本机同容器调试可覆盖为 127.0.0.1:6333
+# 早先这个地址是硬编码的 127.0.0.1:6333，在 k8s 里 nginx 与后端是两个 Pod，
+# 全部 API 会 502 —— 所以它必须是变量。
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;   # _frontend/dist 拷到这里
+    index index.html;
+
+    # gzip
+    gzip on;
+    gzip_types application/json application/javascript text/css;
+
+    # 后端反代：/api/{collections,health,__instance,vector}
+    # rewrite 把 /api/* 还原成 /* 再转给后端（与 vite dev proxy 同口径）。
+    #
+    # /api/vector/* 要多剥一层 "vector"：前端 services/api.js 里 instance() 打的是
+    # '/vector/__instance'，axios baseURL 是 /api，合成 /api/vector/__instance；
+    # vite dev proxy 的 '/api/vector' 规则 rewrite 掉的是整个 /api/vector 前缀。
+    # 只剥 /api 会留下 /vector/__instance，而后端没有 /vector 这层 context → 404。
+    location ^~ /api/vector/ {
+        rewrite ^/api/vector(.*)$ $1 break;
+        proxy_pass http://${ZVECTOR_API_UPSTREAM};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_read_timeout 60s;
+    }
+
+    location /api/ {
+        rewrite ^/api(.*)$ $1 break;
+        proxy_pass http://${ZVECTOR_API_UPSTREAM};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_read_timeout 60s;
+    }
+
+    # 健康检查：给 k8s livenessProbe 用，不打后端
+    location = /healthz {
+        access_log off;
+        return 200 "ok\n";
+    }
+
+    # SPA fallback：所有 /collections /search /instance 这种前端路由都返回 index.html
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

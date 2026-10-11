@@ -1,0 +1,198 @@
+# z-vector 部署到家庭 k3s 集群（192.168.31.250）
+#
+# 结构：后端 z-vector-server（:6333 REST）+ 前端 z-vector-frontend（nginx :80）
+# 前端通过 /api/** 反代到后端 Service，两者在同一 namespace 内按服务名通信。
+#
+# 与 z-graph 的差异：z-vector 没有 Bolt 端口，只有 REST 一套。
+# 数据落 ZVECTOR_DATA_DIR，走 PVC。
+#
+# 使用：
+#   kubectl apply -f z-vector.yaml
+#   kubectl -n z-vector port-forward svc/z-vector-frontend 3001:80
+#
+# 镜像说明：tag 走本地构建后 docker save + k3s ctr import，不依赖外网仓库。
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: z-vector
+  labels:
+    app.kubernetes.io/part-of: z-vector
+
+---
+# ===== 后端配置 =====
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: z-vector-config
+  namespace: z-vector
+data:
+  ZVECTOR_PORT: "6333"
+  ZVECTOR_DATA_DIR: "/data/zvector"
+  # 默认索引：空 = 走内置 FLAT。拼错不静默降级，进程直接起不来。
+  ZVECTOR_DEFAULT_INDEX: ""
+  ZVECTOR_INDEX_PARAMS: ""
+  JAVA_OPTS: "-Xms512m -Xmx2048m -XX:+UseG1GC"
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: z-vector-data
+  namespace: z-vector
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# ===== 后端 Deployment =====
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: z-vector-server
+  namespace: z-vector
+  labels:
+    app.kubernetes.io/name: z-vector-server
+    app.kubernetes.io/part-of: z-vector
+spec:
+  replicas: 1
+  # 单副本：底层存储不支持并发写
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: z-vector-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: z-vector-server
+        app.kubernetes.io/part-of: z-vector
+    spec:
+      containers:
+        - name: z-vector-server
+          image: z-vector-server:250
+          imagePullPolicy: Never
+          ports:
+            - name: rest
+              containerPort: 6333
+          envFrom:
+            - configMapRef:
+                name: z-vector-config
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: rest
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: rest
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data/zvector
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: z-vector-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: z-vector-server
+  namespace: z-vector
+  labels:
+    app.kubernetes.io/name: z-vector-server
+spec:
+  selector:
+    app.kubernetes.io/name: z-vector-server
+  ports:
+    - name: rest
+      port: 6333
+      targetPort: rest
+
+---
+# ===== 前端 Deployment =====
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: z-vector-frontend
+  namespace: z-vector
+  labels:
+    app.kubernetes.io/name: z-vector-frontend
+    app.kubernetes.io/part-of: z-vector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: z-vector-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: z-vector-frontend
+        app.kubernetes.io/part-of: z-vector
+    spec:
+      containers:
+        - name: z-vector-frontend
+          image: z-vector-frontend:250
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 80
+          env:
+            # nginx entrypoint 会 envsubst 这个变量进 nginx.conf.template。
+            # 与后端 Service 同 namespace，按服务名走。
+            - name: ZVECTOR_API_UPSTREAM
+              value: z-vector-server:6333
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: z-vector-frontend
+  namespace: z-vector
+  labels:
+    app.kubernetes.io/name: z-vector-frontend
+spec:
+  selector:
+    app.kubernetes.io/name: z-vector-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  # NodePort：与 docker 版 6333/3000 并存不撞车（用户拍板：新旧并存）
+  type: NodePort
