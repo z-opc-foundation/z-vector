@@ -3,8 +3,8 @@
  *
  * 全部 props-only 零 fetch（§9.3）：
  * - ui/*：页面原语（EmptyState / PagedTable / tokens ...）
- * - AppLayout 走 lead 008 §6 单一真源 _shared/z-frontend-common-local/dist/，
- *   suit 直接 import _shared/，本仓不再保留副本（2026-10-11 收口）。
+ * - AppLayout 走 z-frontend-common 独立仓（npm @yuku123/z-frontend-common@^1.0.0），
+ *   suit 直接 import，本仓不再保留副本（2026-10-11 收口）。
  */
 
 export * from './ui/index.js'
