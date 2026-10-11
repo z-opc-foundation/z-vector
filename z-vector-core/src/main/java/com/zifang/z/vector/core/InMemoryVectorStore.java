@@ -67,9 +67,9 @@ public class InMemoryVectorStore implements VectorStore {
     public void createCollection(String name, int dimension, DistanceMetric metric) {
         IndexType preset = defaultIndexType;
         if (preset == null) {
-            createCollection(name, dimension, metric, IndexType.FLAT, null);
+            createCollection(name, dimension, metric, IndexType.FLAT, null, null);
         } else {
-            createCollection(name, dimension, metric, preset, defaultIndexParams);
+            createCollection(name, dimension, metric, preset, defaultIndexParams, null);
         }
     }
 
@@ -81,8 +81,16 @@ public class InMemoryVectorStore implements VectorStore {
     }
 
     @Override
+    @Deprecated
     public void createCollection(String name, int dimension, DistanceMetric metric,
                                   IndexType indexType, Map<String, Object> indexParams) {
+        createCollection(name, dimension, metric, indexType, indexParams, null);
+    }
+
+    @Override
+    public void createCollection(String name, int dimension, DistanceMetric metric,
+                                  IndexType indexType, Map<String, Object> indexParams,
+                                  String description) {
         ensureNotClosed();
         if (collections.containsKey(name)) {
             throw new VectorException("Collection already exists: " + name);
@@ -91,7 +99,7 @@ public class InMemoryVectorStore implements VectorStore {
             throw new VectorException("Dimension must be > 0, got " + dimension);
         }
         VectorCollection schema = new VectorCollection(name, dimension, metric,
-                indexType, indexParams);
+                indexType, indexParams, description);
         Collection coll = new Collection(schema);
         collections.put(name, coll);
         LOG.info("Created collection: {} (dim={}, metric={}, index={})",

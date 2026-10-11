@@ -254,16 +254,18 @@ public class QdrantRestServer {
         int dimension = asInt(body.get("dimension"), 128, "dimension");
         DistanceMetric metric = parseMetric(body.get("metric"));
         Map<String, Object> indexParams = asParamsMap(body.get("index_params"), "index_params");
+        // 集合描述：可缺省；最长 512 字符避免被滥用灌垃圾。前端表单给个 maxLength 即可。
+        String description = asDescription(body.get("description"), "description");
         // 缺省时不能填个 "FLAT" 再走 5 参 —— 那等于当着客户端的面把进程配好的默认索引顶掉。
         // 而 starter 那条路恰好就是这么死的：zvector.default-index → store.setDefaultIndex →
         // 同一个 store 交给这台 server，但客户端不写 index_type 时这里传的是显式 FLAT ⇒
         // 配了 HNSW 也永远建出 FLAT，且响应只有 status/name，谁都看不见这次降级。
         Object rawIndexType = body.get("index_type");
         if (rawIndexType == null) {
-            store.createCollection(name, dimension, metric);
+            store.createCollection(name, dimension, metric, IndexType.FLAT, null, description);
         } else {
             store.createCollection(name, dimension, metric,
-                    parseIndexType(rawIndexType, "index_type"), indexParams);
+                    parseIndexType(rawIndexType, "index_type"), indexParams, description);
         }
         // 回读 store 里真正建出来的那个，不回吐客户端传进来的（理由同独立 server 那一侧）。
         VectorCollection created = store.getCollection(name);
@@ -274,6 +276,7 @@ public class QdrantRestServer {
         resp.put("metric", created.getMetric().name());
         resp.put("index_type", created.getIndexType().name());
         resp.put("index_params", created.getConfig());
+        resp.put("description", created.getDescription());
         sendJson(exchange, 200, resp);
     }
 
@@ -344,9 +347,23 @@ public class QdrantRestServer {
             }
         }
         if (parsed <= 0) {
-            throw new IllegalArgumentException(where + " must be a positive integer, got: " + v);
+            throw new IllegalArgumentException(where + " must be a positive integer, got: " + parsed);
         }
         return parsed;
+    }
+
+    /** 集合描述：可缺省，类型必须是字符串，长度上限 512 避免灌垃圾。 */
+    private static String asDescription(Object v, String where) {
+        if (v == null) return null;
+        if (!(v instanceof String)) {
+            throw new IllegalArgumentException(where + " must be a string, got: "
+                    + v.getClass().getSimpleName());
+        }
+        String s = ((String) v).trim();
+        if (s.length() > 512) {
+            throw new IllegalArgumentException(where + " must be at most 512 characters, got " + s.length());
+        }
+        return s.isEmpty() ? null : s;
     }
 
     private void handleGetCollection(HttpExchange exchange, String name) throws IOException {
@@ -363,6 +380,7 @@ public class QdrantRestServer {
         // 索引参数也要能读回来：创建响应现在回读了，GET 这一路却只回类型，
         // 于是"M=16 到底进没进去"仍然只能靠再建一次集合去猜。
         resp.put("index_params", c.getConfig());
+        resp.put("description", c.getDescription());
         resp.put("points_count", store.getPointCount(name));
         resp.put("indexed", store.isIndexed(name));
         sendJson(exchange, 200, resp);

@@ -260,8 +260,10 @@ public class PersistentVectorStore implements VectorStore {
         IndexType indexType = IndexType.valueOf((String) m.get("index_type"));
         if (collections.containsKey(name)) return;
         Map<String, Object> params = (Map<String, Object>) m.get("index_params");
+        // 老 WAL 记录没 description 字段 → 当 null，VectorCollection 内部转成空串
+        String description = (String) m.get("description");
         Collection coll = new Collection(new VectorCollection(name, dimension, metric,
-                indexType, params));
+                indexType, params, description));
         collections.put(name, coll);
     }
 
@@ -271,9 +273,9 @@ public class PersistentVectorStore implements VectorStore {
     public void createCollection(String name, int dimension, DistanceMetric metric) {
         IndexType preset = defaultIndexType;
         if (preset == null) {
-            createCollection(name, dimension, metric, IndexType.FLAT, null);
+            createCollection(name, dimension, metric, IndexType.FLAT, null, null);
         } else {
-            createCollection(name, dimension, metric, preset, defaultIndexParams);
+            createCollection(name, dimension, metric, preset, defaultIndexParams, null);
         }
     }
 
@@ -285,16 +287,24 @@ public class PersistentVectorStore implements VectorStore {
     }
 
     @Override
+    @Deprecated
     public void createCollection(String name, int dimension, DistanceMetric metric,
                                   IndexType indexType, Map<String, Object> indexParams) {
+        createCollection(name, dimension, metric, indexType, indexParams, null);
+    }
+
+    @Override
+    public void createCollection(String name, int dimension, DistanceMetric metric,
+                                  IndexType indexType, Map<String, Object> indexParams,
+                                  String description) {
         ensureNotClosed();
         if (collections.containsKey(name)) {
             throw new VectorException("Collection already exists: " + name);
         }
         try {
-            walAppend(WalRecord.createCollection(name, dimension, metric, indexType, indexParams));
+            walAppend(WalRecord.createCollection(name, dimension, metric, indexType, indexParams, description));
             Collection coll = new Collection(new VectorCollection(name, dimension, metric,
-                    indexType, indexParams));
+                    indexType, indexParams, description));
             collections.put(name, coll);
             walRecordsSinceCheckpoint++;
             maybeCheckpoint();

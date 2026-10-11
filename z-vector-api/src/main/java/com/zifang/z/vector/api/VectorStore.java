@@ -37,16 +37,30 @@ public interface VectorStore extends AutoCloseable {
     void createCollection(String name, int dimension, DistanceMetric metric);
 
     /**
-     * 创建集合（指定索引类型与参数）
+     * 创建集合（指定索引类型与参数）。
      *
-     * @param name       集合名（同一 store 内唯一）
-     * @param dimension  向量维度（> 0）
-     * @param metric     距离度量
-     * @param indexType  索引类型（HNSW/IVF/FLAT）
-     * @param indexParams 索引参数（null 则使用默认值）
+     * @deprecated 改用 {@link #createCollection(String, int, DistanceMetric, IndexType, Map, String)}
+     *             并把 description 显式传 null；本方法仅为兼容老调用方保留。
+     */
+    @Deprecated
+    default void createCollection(String name, int dimension, DistanceMetric metric,
+                                   IndexType indexType, Map<String, Object> indexParams) {
+        createCollection(name, dimension, metric, indexType, indexParams, null);
+    }
+
+    /**
+     * 创建集合（指定索引类型与参数 + 描述）
+     *
+     * @param name         集合名（同一 store 内唯一）
+     * @param dimension    向量维度（> 0）
+     * @param metric       距离度量
+     * @param indexType    索引类型（HNSW/IVF/FLAT）
+     * @param indexParams  索引参数（null 则使用默认值）
+     * @param description  集合描述（可为 null）
      */
     void createCollection(String name, int dimension, DistanceMetric metric,
-                          IndexType indexType, Map<String, Object> indexParams);
+                          IndexType indexType, Map<String, Object> indexParams,
+                          String description);
 
     /**
      * 设定 {@link #createCollection(String, int, DistanceMetric)} 那一支在未显式指定索引时

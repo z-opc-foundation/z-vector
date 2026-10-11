@@ -74,11 +74,23 @@ public class WalRecord {
     public static WalRecord createCollection(String name, int dimension,
                                             DistanceMetric metric, IndexType indexType,
                                             java.util.Map<String, Object> indexParams) {
+        return createCollection(name, dimension, metric, indexType, indexParams, null);
+    }
+
+    /**
+     * 带 description 的集合创建记录。description 字段始终写入 JSON（缺省空串），
+     * 让重放路径不需要判 key 是否存在 —— 与 vector payload 字段一律出现的写法对齐。
+     */
+    public static WalRecord createCollection(String name, int dimension,
+                                            DistanceMetric metric, IndexType indexType,
+                                            java.util.Map<String, Object> indexParams,
+                                            String description) {
         String payload = "{\"name\":" + jsonString(name)
                 + ",\"dimension\":" + dimension
                 + ",\"metric\":" + jsonString(metric.name())
                 + ",\"index_type\":" + jsonString(indexType.name())
                 + ",\"index_params\":" + jsonMap(indexParams)
+                + ",\"description\":" + jsonString(description == null ? "" : description)
                 + "}";
         return new WalRecord(WalOpType.CREATE_COLLECTION, name, payload);
     }

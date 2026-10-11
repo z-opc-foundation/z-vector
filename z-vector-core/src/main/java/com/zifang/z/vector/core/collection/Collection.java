@@ -91,6 +91,7 @@ public class Collection {
     public int getDimension() { return schema.getDimension(); }
     public DistanceMetric getMetric() { return schema.getMetric(); }
     public IndexType getIndexType() { return schema.getIndexType(); }
+    public String getDescription() { return schema.getDescription(); }
 
     // ==================== CRUD（委托给 Index）====================
 

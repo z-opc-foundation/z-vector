@@ -22,20 +22,28 @@ public class VectorCollection {
     private final DistanceMetric metric;
     private final IndexType indexType;
     private final Map<String, Object> config;
+    private final String description;
     private final long createdAt;
 
     public VectorCollection(String name, int dimension, DistanceMetric metric,
-                            IndexType indexType, Map<String, Object> config) {
+                            IndexType indexType, Map<String, Object> config,
+                            String description) {
         this.name = Objects.requireNonNull(name, "name");
         this.dimension = dimension;
         this.metric = Objects.requireNonNull(metric, "metric");
         this.indexType = Objects.requireNonNull(indexType, "indexType");
         this.config = config == null ? new LinkedHashMap<>() : new LinkedHashMap<>(config);
+        this.description = description == null ? "" : description;
         this.createdAt = System.currentTimeMillis();
     }
 
+    public VectorCollection(String name, int dimension, DistanceMetric metric,
+                            IndexType indexType, Map<String, Object> config) {
+        this(name, dimension, metric, indexType, config, null);
+    }
+
     public VectorCollection(String name, int dimension, DistanceMetric metric) {
-        this(name, dimension, metric, IndexType.FLAT, Collections.emptyMap());
+        this(name, dimension, metric, IndexType.FLAT, Collections.emptyMap(), null);
     }
 
     public String getName() { return name; }
@@ -43,6 +51,7 @@ public class VectorCollection {
     public DistanceMetric getMetric() { return metric; }
     public IndexType getIndexType() { return indexType; }
     public Map<String, Object> getConfig() { return Collections.unmodifiableMap(config); }
+    public String getDescription() { return description; }
     public long getCreatedAt() { return createdAt; }
 
     @Override

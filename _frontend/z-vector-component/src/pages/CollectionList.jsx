@@ -56,6 +56,7 @@ export default function CollectionList() {
                 dimension: values.dimension,
                 metric: values.metric,
                 index_type: values.index_type,
+                description: values.description || undefined,
             })
             setCreating(false)
             form.resetFields()
@@ -111,13 +112,19 @@ export default function CollectionList() {
                         }}
                         columns={[
                             {
-                                title: '集合名', dataIndex: 'name', key: 'name',
+                                title: '集合名', dataIndex: 'name', key: 'name', width: 200,
                                 render: (v, r) => r.detailError
                                     ? <span>{v} <Tag color="warning">详情失败</Tag></span>
                                     : <a onClick={() => navigate(`/z-vector/collections/${encodeURIComponent(v)}`)}>{v}</a>
                             },
                             {
-                                title: '维度', dataIndex: 'dimension', key: 'dimension', width: 90,
+                                title: '描述', dataIndex: 'description', key: 'description', width: 360,
+                                render: (v, r) => r.detailError
+                                    ? <Tip text={r.detailError}>-</Tip>
+                                    : (v ? <Tip text={v}>{v}</Tip> : <span style={{color: '#bfbfbf'}}>未填写</span>)
+                            },
+                            {
+                                title: '维度', dataIndex: 'dimension', key: 'dimension', width: 80,
                                 render: (v, r) => r.detailError ? <Tip text={r.detailError}>-</Tip> : (v ?? '-')
                             },
                             { title: '距离度量', dataIndex: 'metric', key: 'metric', width: 120, render: (v) => v ? <Tag>{v}</Tag> : '-' },
@@ -168,6 +175,9 @@ export default function CollectionList() {
                                    { pattern: NAME_PATTERN, message: '只允许字母、数字、下划线和短横线（后端路由按这个正则匹配）' },
                                ]}>
                         <Input placeholder="例如 demo_docs" />
+                    </Form.Item>
+                    <Form.Item name="description" label="描述" extra="非必填。最长 512 字符。" >
+                        <Input.TextArea rows={2} maxLength={512} showCount placeholder="一句话说清这个集合装的是什么向量" />
                     </Form.Item>
                     <Form.Item name="dimension" label="向量维度"
                                rules={[{ required: true, message: '请输入维度' }]}
