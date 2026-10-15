@@ -1,7 +1,7 @@
 package com.zifang.z.vector.server;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.DistanceMetric;
 import com.zifang.z.vector.api.IndexType;
 import com.zifang.z.vector.core.InMemoryVectorStore;
@@ -9,13 +9,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
@@ -34,8 +34,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 走单点定义，OpenApiSpec 与真实路由一致。本测试只钉 server 这一层装配（最长前缀挂载 /health、/__instance、根上下文）。
  */
 class VectorServerApplicationTest {
-
-    private static final ObjectMapper JSON = new ObjectMapper();
 
     private HttpServer server;
     private InMemoryVectorStore store;
@@ -61,7 +59,7 @@ class VectorServerApplicationTest {
         final byte[] body;
         Resp(int status, byte[] body) { this.status = status; this.body = body; }
         String text() { return new String(body, StandardCharsets.UTF_8); }
-        Map<?, ?> json() throws IOException { return JSON.readValue(body, Map.class); }
+        Map<?, ?> json() throws IOException { return plainMap(body); }
     }
 
     private Resp call(String method, String path, String body) throws IOException {
@@ -361,4 +359,12 @@ class VectorServerApplicationTest {
         assertEquals(200, r.status, r.text());
         assertEquals(0, ((Number) r.json().get("count")).intValue());
     }
+
+    /** 契约测试用：把响应体读成 plain 的有序 Map（嵌套层同样是 Map/List）。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> plainMap(String json) {
+        Object node = JsonUtil.toPlainValue(JsonUtil.parse(json));
+        return node instanceof Map ? (Map<String, Object>) node : null;
+    }
+
 }

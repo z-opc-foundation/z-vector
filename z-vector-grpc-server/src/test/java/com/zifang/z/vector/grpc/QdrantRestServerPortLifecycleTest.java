@@ -1,11 +1,12 @@
 package com.zifang.z.vector.grpc;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.VectorStore;
 import com.zifang.z.vector.core.InMemoryVectorStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -35,8 +36,6 @@ import static org.junit.jupiter.api.Assertions.*;
  * 同一 JVM 里别的池子无从区分，第 2 条缺陷在测试里就根本观测不到。
  */
 class QdrantRestServerPortLifecycleTest {
-
-    private static final ObjectMapper JSON = new ObjectMapper();
 
     private VectorStore store;
     private QdrantRestServer server;
@@ -80,7 +79,7 @@ class QdrantRestServerPortLifecycleTest {
                 while ((r = in.read(buf)) > 0) bos.write(buf, 0, r);
             }
             @SuppressWarnings("unchecked")
-            Map<String, Object> parsed = JSON.readValue(bos.toByteArray(), Map.class);
+            Map<String, Object> parsed = plainMap(bos.toByteArray());
             return parsed;
         } finally {
             c.disconnect();
@@ -155,4 +154,16 @@ class QdrantRestServerPortLifecycleTest {
         server = null;
         assertEquals(0, restThreads(), "两次 stop 之后不该留下线程");
     }
+
+    /** 契约测试用：把响应体读成 plain 的有序 Map（嵌套层同样是 Map/List）。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> plainMap(String json) {
+        Object node = JsonUtil.toPlainValue(JsonUtil.parse(json));
+        return node instanceof Map ? (Map<String, Object>) node : null;
+    }
+
+    private static Map<String, Object> plainMap(byte[] json) {
+        return plainMap(new String(json, StandardCharsets.UTF_8));
+    }
+
 }

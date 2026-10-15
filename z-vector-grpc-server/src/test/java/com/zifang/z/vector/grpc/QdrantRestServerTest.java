@@ -1,6 +1,6 @@
 package com.zifang.z.vector.grpc;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.DistanceMetric;
 import com.zifang.z.vector.api.IndexType;
 import com.zifang.z.vector.api.VectorStore;
@@ -9,13 +9,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -35,11 +35,9 @@ class QdrantRestServerTest {
         return m;
     }
 
-
     private static final int TEST_PORT = 16334; // 避开默认 6334
     private QdrantRestServer server;
     private VectorStore store;
-    private final ObjectMapper json = new ObjectMapper();
 
     @BeforeEach
     void setUp() throws IOException {
@@ -191,7 +189,7 @@ class QdrantRestServerTest {
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json");
             try (OutputStream os = conn.getOutputStream()) {
-                os.write(json.writeValueAsBytes(body));
+                os.write(JsonUtil.toJson(body).getBytes(StandardCharsets.UTF_8));
             }
         }
         int code = conn.getResponseCode();
@@ -211,7 +209,7 @@ class QdrantRestServerTest {
         conn.disconnect();
         if (bytes.length == 0) return new LinkedHashMap<>();
         @SuppressWarnings("unchecked")
-        Map<String, Object> resp = json.readValue(bytes, Map.class);
+        Map<String, Object> resp = plainMap(bytes);
         return resp == null ? new LinkedHashMap<>() : resp;
     }
 
@@ -293,4 +291,16 @@ class QdrantRestServerTest {
         if (payload != null) p.put("payload", payload);
         return p;
     }
+
+    /** 契约测试用：把响应体读成 plain 的有序 Map（嵌套层同样是 Map/List）。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> plainMap(String json) {
+        Object node = JsonUtil.toPlainValue(JsonUtil.parse(json));
+        return node instanceof Map ? (Map<String, Object>) node : null;
+    }
+
+    private static Map<String, Object> plainMap(byte[] json) {
+        return plainMap(new String(json, StandardCharsets.UTF_8));
+    }
+
 }

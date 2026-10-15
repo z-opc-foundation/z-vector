@@ -1,6 +1,5 @@
 package com.zifang.z.vector.server;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
 import com.zifang.z.vector.core.InMemoryVectorStore;
 import org.junit.jupiter.api.AfterEach;
@@ -223,7 +222,6 @@ class VectorServerCorsTest {
 
     // 留作未来扩展：响应 body 解析。
     @SuppressWarnings("unused")
-    private static final ObjectMapper JSON = new ObjectMapper();
 
     @SuppressWarnings("unused")
     private static byte[] readAll(InputStream is) throws IOException {

@@ -1,6 +1,6 @@
 package com.zifang.z.vector.starter;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.starter.autoconfigure.ZVectorAutoConfiguration;
 import com.zifang.z.vector.starter.autoconfigure.ZVectorAutoConfiguration.QdrantRestServerLifecycle;
 import org.junit.jupiter.api.Test;
@@ -8,6 +8,7 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.ApplicationContext;
 
+import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -35,8 +36,6 @@ import static org.junit.jupiter.api.Assertions.*;
  * 不看 Bean 建没建 —— Bean 建了却没 listen、或者 listen 在别的端口上，都会被同一把尺抓到。
  */
 class ZVectorRestAutoConfigurationTest {
-
-    private static final ObjectMapper JSON = new ObjectMapper();
 
     /**
      * 每个用例都要真的进到 lambda 里。{@code ApplicationContextRunner} 在上下文启动失败时
@@ -74,7 +73,7 @@ class ZVectorRestAutoConfigurationTest {
                 while ((r = in.read(buf)) > 0) bos.write(buf, 0, r);
             }
             @SuppressWarnings("unchecked")
-            Map<String, Object> parsed = JSON.readValue(bos.toByteArray(), Map.class);
+            Map<String, Object> parsed = plainMap(bos.toByteArray());
             return parsed;
         } finally {
             c.disconnect();
@@ -168,4 +167,16 @@ class ZVectorRestAutoConfigurationTest {
             assertEquals(port, rebind.getLocalPort(), "上下文关闭后端口应可重新绑定");
         }
     }
+
+    /** 契约测试用：把响应体读成 plain 的有序 Map（嵌套层同样是 Map/List）。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> plainMap(String json) {
+        Object node = JsonUtil.toPlainValue(JsonUtil.parse(json));
+        return node instanceof Map ? (Map<String, Object>) node : null;
+    }
+
+    private static Map<String, Object> plainMap(byte[] json) {
+        return plainMap(new String(json, StandardCharsets.UTF_8));
+    }
+
 }

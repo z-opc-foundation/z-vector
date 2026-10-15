@@ -1,7 +1,6 @@
 package com.zifang.z.vector.storage.wal;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.DistanceMetric;
 import com.zifang.z.vector.api.IndexType;
 import com.zifang.z.vector.api.VectorCollection;
@@ -41,8 +40,6 @@ import static org.junit.jupiter.api.Assertions.fail;
  */
 class WalCreateCollectionPayloadTest {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
-
     private static Map<String, Object> params() {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("M", 7);
@@ -56,8 +53,7 @@ class WalCreateCollectionPayloadTest {
     void createCollectionPayloadCarriesIndexParams() throws IOException {
         WalRecord rec = WalRecord.createCollection("docs", 8, DistanceMetric.COSINE,
                 IndexType.HNSW, params());
-        Map<String, Object> m = JSON.readValue(rec.getPayload(),
-                new TypeReference<Map<String, Object>>() {});
+        Map<String, Object> m = plainMap(rec.getPayload());
         assertEquals("docs", m.get("name"));
         assertEquals(8, ((Number) m.get("dimension")).intValue());
         assertEquals("HNSW", m.get("index_type"));
@@ -209,8 +205,7 @@ class WalCreateCollectionPayloadTest {
     void absentParamsRoundTripToEmptyMap() throws IOException {
         WalRecord rec = WalRecord.createCollection("docs", 4, DistanceMetric.L2,
                 IndexType.FLAT, null);
-        Map<String, Object> m = JSON.readValue(rec.getPayload(),
-                new TypeReference<Map<String, Object>>() {});
+        Map<String, Object> m = plainMap(rec.getPayload());
         assertEquals(new LinkedHashMap<String, Object>(), m.get("index_params"));
 
         // 空 List / 空 Map 也不许写成 toString 的形状
@@ -219,8 +214,7 @@ class WalCreateCollectionPayloadTest {
         withEmpty.put("map", new LinkedHashMap<String, Object>());
         WalRecord rec2 = WalRecord.upsertPoint("docs",
                 new VectorPoint("d1", new float[]{1}, withEmpty));
-        Map<String, Object> payload = JSON.readValue(rec2.getPayload(),
-                new TypeReference<Map<String, Object>>() {});
+        Map<String, Object> payload = plainMap(rec2.getPayload());
         @SuppressWarnings("unchecked")
         Map<String, Object> pl = (Map<String, Object>) payload.get("payload");
         assertEquals(new ArrayList<Object>(), pl.get("list"));
@@ -232,4 +226,12 @@ class WalCreateCollectionPayloadTest {
         if (v instanceof Number) return ((Number) v).intValue();
         return Integer.parseInt(String.valueOf(v).trim());
     }
+
+    /** 契约测试用：把响应体读成 plain 的有序 Map（嵌套层同样是 Map/List）。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> plainMap(String json) {
+        Object node = JsonUtil.toPlainValue(JsonUtil.parse(json));
+        return node instanceof Map ? (Map<String, Object>) node : null;
+    }
+
 }

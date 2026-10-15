@@ -113,6 +113,28 @@
 
     <dependencyManagement>
         <dependencies>
+            <!-- z-util 抬到 1.1.1（去 Jackson 那版）：仓内 13 个契约测试改用
+                 JsonUtil.toPlainValue(JsonUtil.parse(...)) 读响应体，不再依赖 ObjectMapper。
+                 继承来的 z-boot-fleet DM 把它压在 1.0.19（实测 dependency:tree），
+                 而 parse / toPlainValue 是 1.1.1 才有的 API。
+                 ⚠ dsl-kernel 必须同笔钉：parser-json 1.1.1 的 pom 依赖 dsl-kernel 1.1.1，
+                 而 DM 对**传递依赖**同样生效，只钉 parser-json 会被 fleet 压回 1.0.19
+                 造成运行期版本裂开（与 z-opc 的 swagger-annotations 那条同源）。 -->
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-core</artifactId>
+                <version>1.1.1</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-parser-json</artifactId>
+                <version>1.1.1</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yuku123</groupId>
+                <artifactId>z-util-dsl-kernel</artifactId>
+                <version>1.1.1</version>
+            </dependency>
             <!-- 本仓自家 8 个模块各钉一条 ${project.version}（含聚合 pom 自己那一格）。
                  这一格不是装饰：继承来的 DM 会改写**传递依赖**的版本，而 fleet 里 z-vector 那一格
                  钉的是 repo1 上的**已发布件**（实测 z-boot-fleet:1.0.0 → <z-vector.version>1.0.4</z-vector.version>，

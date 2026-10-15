@@ -1,7 +1,7 @@
 package com.zifang.z.vector.grpc;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.DistanceMetric;
 import com.zifang.z.vector.api.IndexType;
 import com.zifang.z.vector.core.InMemoryVectorStore;
@@ -9,12 +9,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -30,8 +30,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 所以这里必须有断言：time_ms 必须存在、必须是非负数、必须与墙上时钟量级相当。
  */
 class QdrantRestServerSearchTimeMsTest {
-
-    private static final ObjectMapper JSON = new ObjectMapper();
 
     private HttpServer server;
     private QdrantRestServer qdrant;
@@ -70,7 +68,7 @@ class QdrantRestServerSearchTimeMsTest {
         int code = c.getResponseCode();
         assertEquals(200, code);
         byte[] respBody = readAll(c.getInputStream());
-        Map<?, ?> json = JSON.readValue(respBody, Map.class);
+        Map<?, ?> json = plainMap(respBody);
         c.disconnect();
         long wallEnd = System.currentTimeMillis();
 
@@ -96,7 +94,7 @@ class QdrantRestServerSearchTimeMsTest {
             os.write(body.getBytes(StandardCharsets.UTF_8));
         }
         byte[] respBody = readAll(c.getInputStream());
-        Map<?, ?> json = JSON.readValue(respBody, Map.class);
+        Map<?, ?> json = plainMap(respBody);
         c.disconnect();
         assertEquals("ok", json.get("status"));
         List<?> result = (List<?>) json.get("result");
@@ -113,4 +111,16 @@ class QdrantRestServerSearchTimeMsTest {
         is.close();
         return bos.toByteArray();
     }
+
+    /** 契约测试用：把响应体读成 plain 的有序 Map（嵌套层同样是 Map/List）。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> plainMap(byte[] json) {
+        return plainMap(new String(json, StandardCharsets.UTF_8));
+    }
+
+    private static Map<String, Object> plainMap(String json) {
+        Object node = JsonUtil.toPlainValue(JsonUtil.parse(json));
+        return node instanceof Map ? (Map<String, Object>) node : null;
+    }
+
 }

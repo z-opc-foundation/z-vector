@@ -1,6 +1,6 @@
 package com.zifang.z.vector.grpc;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.DistanceMetric;
 import com.zifang.z.vector.api.VectorStore;
 import com.zifang.z.vector.core.InMemoryVectorStore;
@@ -9,13 +9,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -46,7 +46,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class QdrantRestFilterContractTest {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
     private static final String COL = "flt";
 
     /** {操作符/组合词, 探针 filter, 期望命中的 id}。探针结果集两两不同，见类注释。 */
@@ -322,7 +321,7 @@ class QdrantRestFilterContractTest {
         Resp r = new Resp(code, new String(bos.toByteArray(), StandardCharsets.UTF_8));
         if (!r.body.isEmpty()) {
             @SuppressWarnings("unchecked")
-            Map<String, Object> parsed = JSON.readValue(r.body, Map.class);
+            Map<String, Object> parsed = plainMap(r.body);
             if (parsed != null) r.json = parsed;
         }
         Object message = r.json.get("message");
@@ -341,4 +340,12 @@ class QdrantRestFilterContractTest {
             this.body = body;
         }
     }
+
+    /** 契约测试用：把响应体读成 plain 的有序 Map（嵌套层同样是 Map/List）。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> plainMap(String json) {
+        Object node = JsonUtil.toPlainValue(JsonUtil.parse(json));
+        return node instanceof Map ? (Map<String, Object>) node : null;
+    }
+
 }

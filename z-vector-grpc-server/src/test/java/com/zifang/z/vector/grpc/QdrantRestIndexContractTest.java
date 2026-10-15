@@ -1,6 +1,6 @@
 package com.zifang.z.vector.grpc;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.DistanceMetric;
 import com.zifang.z.vector.api.IndexType;
 import com.zifang.z.vector.api.VectorCollection;
@@ -10,6 +10,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -41,8 +42,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 只有一台兑现 —— 这正是"改了独立 server 就以为收口了"的形状。
  */
 class QdrantRestIndexContractTest {
-
-    private static final ObjectMapper JSON = new ObjectMapper();
 
     private VectorStore store;
     private QdrantRestServer server;
@@ -277,7 +276,7 @@ class QdrantRestIndexContractTest {
             conn.setDoOutput(true);
             conn.setRequestProperty("Content-Type", "application/json");
             try (OutputStream os = conn.getOutputStream()) {
-                os.write(JSON.writeValueAsBytes(body));
+                os.write(JsonUtil.toJson(body).getBytes(StandardCharsets.UTF_8));
             }
         }
         int code = conn.getResponseCode();
@@ -296,7 +295,7 @@ class QdrantRestIndexContractTest {
         Resp r = new Resp(code, new String(bos.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
         if (r.body.length() > 0) {
             @SuppressWarnings("unchecked")
-            Map<String, Object> parsed = JSON.readValue(r.body, Map.class);
+            Map<String, Object> parsed = plainMap(r.body);
             if (parsed != null) r.json = parsed;
         }
         return r;
@@ -333,4 +332,12 @@ class QdrantRestIndexContractTest {
         if (v instanceof Number) return ((Number) v).intValue();
         return Integer.parseInt(String.valueOf(v).trim());
     }
+
+    /** 契约测试用：把响应体读成 plain 的有序 Map（嵌套层同样是 Map/List）。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> plainMap(String json) {
+        Object node = JsonUtil.toPlainValue(JsonUtil.parse(json));
+        return node instanceof Map ? (Map<String, Object>) node : null;
+    }
+
 }

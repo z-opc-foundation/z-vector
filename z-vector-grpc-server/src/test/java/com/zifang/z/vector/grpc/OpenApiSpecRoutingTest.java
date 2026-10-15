@@ -1,8 +1,8 @@
 package com.zifang.z.vector.grpc;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.VectorStore;
 import com.zifang.z.vector.core.InMemoryVectorStore;
 import com.zifang.z.vector.protocol.OpenApiSpec;
@@ -10,13 +10,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -48,7 +48,6 @@ class OpenApiSpecRoutingTest {
     /** 兜底那一句的开头 —— 只有 {@link QdrantRestServer} 的路由没命中时才会出现。 */
     private static final String ROUTER_FALLTHROUGH = "Not found:";
 
-    private static final ObjectMapper JSON = new ObjectMapper();
     private static final String[] METHODS = {"get", "put", "post", "delete"};
 
     /**
@@ -203,14 +202,14 @@ class OpenApiSpecRoutingTest {
         if (!text.isEmpty()) {
             try {
                 @SuppressWarnings("unchecked")
-                Map<String, Object> parsed = JSON.readValue(text, Map.class);
+                Map<String, Object> parsed = plainMap(text);
                 Object m = parsed == null ? null : parsed.get("message");
                 // 这台的信封是 {status, code, message}；兜底那条一定带 message。
                 message = m == null ? null : String.valueOf(m);
                 if (message == null && parsed != null && parsed.get("detail") != null) {
                     message = String.valueOf(parsed.get("detail"));
                 }
-            } catch (IOException notJson) {
+            } catch (RuntimeException notJson) {
                 message = text;
             }
         }
@@ -279,4 +278,12 @@ class OpenApiSpecRoutingTest {
                 "真在服务的端点被判成了未路由，上一条尺就成了只会报红的空尺");
         assertFalse(advertisedOperations(OpenApiSpec.generateSpec()).isEmpty(), "解析器没解析出任何操作");
     }
+
+    /** 契约测试用：把响应体读成 plain 的有序 Map（嵌套层同样是 Map/List）。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> plainMap(String json) {
+        Object node = JsonUtil.toPlainValue(JsonUtil.parse(json));
+        return node instanceof Map ? (Map<String, Object>) node : null;
+    }
+
 }

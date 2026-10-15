@@ -1,7 +1,7 @@
 package com.zifang.z.vector.server;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpServer;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.IndexType;
 import com.zifang.z.vector.api.VectorCollection;
 import com.zifang.z.vector.api.VectorStore;
@@ -10,13 +10,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.StandardCharsets;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,8 +36,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 路径换成形如 {@code PUT /collections/{name}} —— 集合名从 URL 路径取，body 只放配置。
  */
 class ServerIndexContractTest {
-
-    private static final ObjectMapper JSON = new ObjectMapper();
 
     private HttpServer server;
     private String base;
@@ -65,7 +63,7 @@ class ServerIndexContractTest {
             this.status = status;
             this.body = raw.length == 0
                     ? new LinkedHashMap<String, Object>()
-                    : JSON.readValue(raw, Map.class);
+                    : plainMap(raw);
         }
 
         Object field(String k) { return body.get(k); }
@@ -322,4 +320,12 @@ class ServerIndexContractTest {
         return v instanceof Number ? ((Number) v).intValue()
                 : Integer.parseInt(String.valueOf(v).trim());
     }
+
+    /** 契约测试用：把响应体读成 plain 的有序 Map（嵌套层同样是 Map/List）。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> plainMap(String json) {
+        Object node = JsonUtil.toPlainValue(JsonUtil.parse(json));
+        return node instanceof Map ? (Map<String, Object>) node : null;
+    }
+
 }
