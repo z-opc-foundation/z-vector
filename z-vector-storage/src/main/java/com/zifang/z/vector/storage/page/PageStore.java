@@ -1,6 +1,6 @@
 package com.zifang.z.vector.storage.page;
 
-import com.zifang.util.core.io.FileUtil;
+import com.zifang.util.core.io.file.FileDirUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -262,7 +262,7 @@ public class PageStore {
         }
         Path path = resolveFile();
         // 确保目录存在
-        FileUtil.mkdirs(path.getParent().toString());
+        FileDirUtil.mkdirs(path.getParent().toString());
 
         // 复用 free slot：如果 pageNo 已被 free，改为写到更小的 free slot
         int targetPageNo = page.id().pageNo();

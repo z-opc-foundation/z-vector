@@ -1,6 +1,6 @@
 package com.zifang.z.vector.core.index;
 
-import com.zifang.util.core.io.FileUtil;
+import com.zifang.util.core.io.file.FileDirUtil;
 import com.zifang.z.vector.api.VectorPoint;
 import com.zifang.z.vector.core.distance.Distance;
 import org.slf4j.Logger;
@@ -99,8 +99,7 @@ public class HnswPersistence {
     public static void save(HnswIndex index, String filePath) throws IOException {
         if (index == null) throw new IllegalArgumentException("index is null");
         Path path = Paths.get(filePath);
-        // 复用 z-util-core 的 FileUtil.mkdirs 替代 Files.createDirectories
-        FileUtil.mkdirs(path.getParent().toString());
+        FileDirUtil.mkdirs(path.getParent().toString());
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream(64 * 1024);
         try (DataOutputStream dos = new DataOutputStream(baos)) {
