@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import com.zifang.util.json.JsonUtil;
 
 /**
  * 把 {@link VectorPoint} 列表编码为二进制字节数组（适合作为 {@link com.zifang.z.vector.storage.page.Page} 的 payload）。
@@ -28,7 +29,7 @@ import java.util.Map;
  * <p>
  * 优点：
  * <ul>
- *   <li>无需 Jackson 解析（每次重启省 ~ms 级开销）；</li>
+ *   <li>点体走定长二进制，不必走 JSON 解析（每次重启省 ~ms 级开销）；</li>
  *   <li>紧凑：1000 个 768 维点约 3MB（vs JSON 约 5MB）；</li>
  *   <li>Page 64KB 容量下，单页可装 ~17 个 768 维点。</li>
  * </ul>
@@ -132,8 +133,8 @@ public final class PointPageCodec {
     private static byte[] payloadToJsonBytes(Map<String, Object> payload) {
         if (payload == null || payload.isEmpty()) return new byte[]{'{', '}'};
         try {
-            return new com.fasterxml.jackson.databind.ObjectMapper()
-                    .writeValueAsBytes(payload);
+            return JsonUtil.toJson(payload)
+                    .getBytes(StandardCharsets.UTF_8);
         } catch (Exception ex) {
             // fallback：手写最小 JSON
             StringBuilder sb = new StringBuilder("{");
@@ -158,8 +159,12 @@ public final class PointPageCodec {
             return new HashMap<>();
         }
         try {
-            return new com.fasterxml.jackson.databind.ObjectMapper()
-                    .readValue(bytes, Map.class);
+            // 必须 toPlainValue：parse() 的嵌套容器是 z-util 自己的 JsonObject/JsonArray，
+            // 下游 VectorPoint.getPayload() 之后会做 instanceof Map 判定，不摊平就静默判不中。
+            Object parsed = JsonUtil.parse(new String(bytes, StandardCharsets.UTF_8));
+            Object plain = JsonUtil.toPlainValue(parsed);
+            if (!(plain instanceof Map)) return new HashMap<>();
+            return (Map<String, Object>) plain;
         } catch (Exception e) {
             return new HashMap<>();
         }

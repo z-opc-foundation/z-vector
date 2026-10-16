@@ -123,17 +123,17 @@
             <dependency>
                 <groupId>io.github.yuku123</groupId>
                 <artifactId>z-util-core</artifactId>
-                <version>1.2.2</version>
+                <version>1.2.4</version>
             </dependency>
             <dependency>
                 <groupId>io.github.yuku123</groupId>
                 <artifactId>z-util-parser-json</artifactId>
-                <version>1.2.2</version>
+                <version>1.2.4</version>
             </dependency>
             <dependency>
                 <groupId>io.github.yuku123</groupId>
                 <artifactId>z-util-dsl-kernel</artifactId>
-                <version>1.2.2</version>
+                <version>1.2.4</version>
             </dependency>
             <!-- 本仓自家 8 个模块各钉一条 ${project.version}（含聚合 pom 自己那一格）。
                  这一格不是装饰：继承来的 DM 会改写**传递依赖**的版本，而 fleet 里 z-vector 那一格

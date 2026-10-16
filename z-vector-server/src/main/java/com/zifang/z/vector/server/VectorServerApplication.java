@@ -1,9 +1,9 @@
 package com.zifang.z.vector.server;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.IndexType;
 import com.zifang.z.vector.api.VectorCollection;
 import com.zifang.z.vector.api.VectorStore;
@@ -184,8 +184,11 @@ public class VectorServerApplication {
         if (raw.isEmpty()) return null;
         Object parsed;
         try {
-            parsed = objectMapper.readValue(raw, Object.class);
-        } catch (IOException e) {
+            // toPlainValue 是必需的：asParamsMap 下面做 instanceof Map 判定，
+            // parse() 的嵌套容器不是 java.util.Map —— 不摊平的话这里恒判不中，
+            // 任何合法 JSON 都会以"must be a JSON object"被拒。
+            parsed = JsonUtil.toPlainValue(JsonUtil.parse(raw));
+        } catch (RuntimeException e) {
             throw new IllegalArgumentException("ZVECTOR_INDEX_PARAMS is not valid JSON: \""
                     + raw + "\" (" + e.getMessage() + ")");
         }
@@ -264,8 +267,6 @@ public class VectorServerApplication {
             System.err.println("Failed to close vector store: " + e.getMessage());
         }
     }
-
-    private static final ObjectMapper objectMapper = new ObjectMapper();
 
     // ==================== Handlers ====================
 
@@ -450,7 +451,7 @@ public class VectorServerApplication {
     // ==================== 响应 / 请求工具 ====================
 
     private static void sendJson(HttpExchange exchange, int status, Object body) throws IOException {
-        byte[] bytes = objectMapper.writeValueAsString(body).getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = JsonUtil.toJson(body).getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
         exchange.sendResponseHeaders(status, bytes.length);
         try (OutputStream os = exchange.getResponseBody()) {
@@ -478,7 +479,14 @@ public class VectorServerApplication {
         }
         byte[] bytes = bos.toByteArray();
         if (bytes.length == 0) return new LinkedHashMap<>();
-        return objectMapper.readValue(bytes, Map.class);
+        // 同 parseIndexParams：必须 toPlainValue，否则嵌套容器判 instanceof Map 恒不中。
+        Object plain = JsonUtil.toPlainValue(JsonUtil.parse(new String(bytes, StandardCharsets.UTF_8)));
+        if (!(plain instanceof Map)) {
+            throw new IOException("Request body is not a JSON object");
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> m = (Map<String, Object>) plain;
+        return m;
     }
 
     /** 测试 hook：让 VectorServerApplicationTest 与 InstanceEndpointTest 都能取到当前 store。 */

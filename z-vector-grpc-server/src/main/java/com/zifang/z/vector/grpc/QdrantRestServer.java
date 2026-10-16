@@ -1,9 +1,9 @@
 package com.zifang.z.vector.grpc;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.DistanceMetric;
 import com.zifang.z.vector.api.Filter;
 import com.zifang.z.vector.api.IndexType;
@@ -49,7 +49,7 @@ import java.util.regex.Pattern;
  * <h2>设计</h2>
  * <p>
  * 使用 JDK 自带 {@code com.sun.net.httpserver.HttpServer} 实现，避免引入 Spring MVC 等重量级框架。
- * JSON 解析使用 Jackson（项目已有依赖）。
+ * JSON 解析使用 z-util 的自研 JSON 库（{@code com.zifang.util.json.JsonUtil}）。
  *
  * <h2>使用示例</h2>
  * <pre>{@code
@@ -78,7 +78,6 @@ public class QdrantRestServer {
     private static final String MARKER_POINTS = "/points/";
 
     private final VectorStore store;
-    private final ObjectMapper json = new ObjectMapper();
     private volatile HttpServer server;
     /** 请求的端口：0 交给内核挑。start() 之后 {@link #getPort()} 报的是真实端口，不是这个。 */
     private final int port;
@@ -144,7 +143,7 @@ public class QdrantRestServer {
      * <p>
      * 不能只贴 {@code this::route}：{@link #route} 是 {@code private}，lambda 会
      * 拿到包私有访问。这里直接把它提到 {@code public}，行为不变 —— 这条方法仍然是
-     * 无状态的（只读 {@code store} 与 {@code json} 两个实例字段）。
+     * 无状态的（只读 {@code store} 一个实例字段）。
      */
     public HttpHandler handler() {
         return this::route;
@@ -333,7 +332,7 @@ public class QdrantRestServer {
         return new LinkedHashMap<>((Map<String, Object>) v);
     }
 
-    /** Jackson 会把 JSON 数字解成 Integer 或 Double，而 `(Number) "768"` 是 ClassCastException ⇒ 500。 */
+    /** JSON 数字解成 Integer/Double，而 `(Number) "768"` 是 ClassCastException ⇒ 500。 */
     private static int asInt(Object v, int defaultValue, String where) {
         if (v == null) return defaultValue;
         int parsed;
@@ -720,17 +719,37 @@ public class QdrantRestServer {
         return bos.toByteArray();
     }
 
+    /**
+     * 读请求体 → Map。
+     * <p>
+     * <b>必须 toPlainValue</b>：{@code JsonUtil.parse()} 的嵌套容器是 z-util 自己的
+     * {@code JsonObject}/{@code JsonArray}，而本类后面全是 {@code instanceof Map} /
+     * {@code instanceof List} / {@code instanceof Number} 判定（asParamsMap、parseFilter、
+     * handleUpsertPoints、handleSearch、asInt…）。不摊平，这些判定会**全部静默判不中** ——
+     * filter 变成"对象但不认识"直接 400，vector 变成"不是数字数组"直接 400，
+     * 而编译期与既有测试一个都拦不住。
+     * <p>
+     * 也因此不能用 {@code JsonUtil.fromJson(text, Map.class)}：Map 是接口，
+     * 走 POJO 分支拿不到无参构造器，抛 {@code deserializePojo failed: java.util.Map}。
+     * <p>
+     * 非对象的请求体（数组/标量）Jackson 会抛 MismatchedInputException（→ route catch
+     * Exception → 500）；这里同样按 IOException 抛出去，错误码一致。
+     */
     @SuppressWarnings("unchecked")
     private Map<String, Object> parseJson(HttpExchange exchange) throws IOException {
         try (InputStream is = exchange.getRequestBody()) {
             byte[] bytes = readAll(is);
             if (bytes.length == 0) return new LinkedHashMap<>();
-            return json.readValue(bytes, Map.class);
+            Object plain = JsonUtil.toPlainValue(JsonUtil.parse(new String(bytes, StandardCharsets.UTF_8)));
+            if (!(plain instanceof Map)) {
+                throw new IOException("Request body is not a JSON object");
+            }
+            return (Map<String, Object>) plain;
         }
     }
 
     private void sendJson(HttpExchange exchange, int code, Object obj) throws IOException {
-        byte[] bytes = json.writeValueAsBytes(obj);
+        byte[] bytes = JsonUtil.toJson(obj).getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
         exchange.sendResponseHeaders(code, bytes.length);
         try (OutputStream os = exchange.getResponseBody()) {

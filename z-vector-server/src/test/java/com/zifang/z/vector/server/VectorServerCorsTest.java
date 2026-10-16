@@ -222,8 +222,6 @@ class VectorServerCorsTest {
 
     // 留作未来扩展：响应 body 解析。
     @SuppressWarnings("unused")
-
-    @SuppressWarnings("unused")
     private static byte[] readAll(InputStream is) throws IOException {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         byte[] buf = new byte[4096];

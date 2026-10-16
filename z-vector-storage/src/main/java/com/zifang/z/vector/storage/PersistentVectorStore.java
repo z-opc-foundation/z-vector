@@ -1,7 +1,6 @@
 package com.zifang.z.vector.storage;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.DistanceMetric;
 import com.zifang.z.vector.api.Filter;
 import com.zifang.z.vector.api.IndexType;
@@ -68,7 +67,6 @@ public class PersistentVectorStore implements VectorStore {
     private final boolean engineOwned;   // 我们自己 new 的还是外部传入
     private final ConcurrentHashMap<String, Collection> collections = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
-    private final ObjectMapper json = new ObjectMapper();
 
     private final long checkpointInterval; // 每多少条 WAL 触发一次 snapshot
     private long walRecordsSinceCheckpoint = 0;
@@ -588,8 +586,31 @@ public class PersistentVectorStore implements VectorStore {
         if (closed.get()) throw new VectorException("VectorStore is closed");
     }
 
+    /**
+     * WAL 载荷 → Map。等价于 Jackson 的 {@code readValue(text, new TypeReference<Map<String,Object>>(){})}：
+     * <ul>
+     *   <li>不能用 {@code JsonUtil.fromJson(text, Map.class)} —— Map 是接口，走 POJO 分支
+     *       拿不到无参构造器，直接抛 {@code deserializePojo failed: java.util.Map}；</li>
+     *   <li>也不能只 {@code parse()}：它的嵌套容器是 z-util 自己的 JsonObject/JsonArray，
+     *       下面 parsePoint 的 {@code (List<Number>)} 与 {@code (Map<String,Object>)} 会静默失配。</li>
+     * </ul>
+     * 截断/非法 JSON 时 JsonUtil 抛 JsonParseException，与 Jackson 一样落到调用方的
+     * IOException/VectorException 处理路径。
+     */
+    @SuppressWarnings("unchecked")
     private Map<String, Object> parseJson(String json) throws IOException {
-        return this.json.readValue(json, new TypeReference<Map<String, Object>>() {});
+        try {
+            Object plain = JsonUtil.toPlainValue(JsonUtil.parse(json));
+            if (plain == null) return Collections.emptyMap();
+            if (!(plain instanceof Map)) {
+                throw new IOException("WAL payload is not a JSON object: " + json);
+            }
+            return (Map<String, Object>) plain;
+        } catch (IOException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new IOException("Failed to parse JSON: " + e.getMessage(), e);
+        }
     }
 
     private VectorPoint parsePoint(String payload) throws IOException {

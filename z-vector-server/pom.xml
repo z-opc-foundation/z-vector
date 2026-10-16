@@ -65,12 +65,12 @@
             <groupId>io.github.yuku123</groupId>
             <artifactId>z-vector-grpc-server</artifactId>
         </dependency>
-        <!-- jackson-databind 的 <version>2.18.6</version> 已删：版本改由父链的 jackson-bom
-             （面值 2.18.6，与原字面量相同）下发。兄弟模块不写 version 由聚合 pom 的
-             ${project.version} 条目兜住，见聚合 pom 的 dependencyManagement 注释。 -->
+        <!-- 去 Jackson：JsonUtil 所在的 z-util-parser-json，版本由聚合 pom 的
+             dependencyManagement 三件（core / parser-json / dsl-kernel，1.2.2）同版本下发。
+             兄弟模块不写 version 由聚合 pom 的 ${project.version} 条目兜住。 -->
         <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
+            <groupId>io.github.yuku123</groupId>
+            <artifactId>z-util-parser-json</artifactId>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>

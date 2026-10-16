@@ -1,6 +1,6 @@
 package com.zifang.z.vector.storage.snapshot;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zifang.util.json.JsonUtil;
 import com.zifang.z.vector.api.DistanceMetric;
 import com.zifang.z.vector.api.IndexType;
 import com.zifang.z.vector.api.VectorPoint;
@@ -51,7 +51,6 @@ public class Snapshot {
     public static final byte VERSION = 1;
 
     private final Path snapshotPath;
-    private final ObjectMapper json = new ObjectMapper();
 
     public Snapshot(String dataDir) {
         this.snapshotPath = Paths.get(dataDir, "snapshot.bin");
@@ -73,7 +72,7 @@ public class Snapshot {
         root.put("timestamp", System.currentTimeMillis());
         root.put("collections", collectionsJson);
 
-        byte[] jsonBytes = json.writeValueAsBytes(root);
+        byte[] jsonBytes = JsonUtil.toJson(root).getBytes(StandardCharsets.UTF_8);
 
         try (RandomAccessFile raf = new RandomAccessFile(snapshotPath.toFile(), "rw")) {
             raf.setLength(0);
@@ -118,7 +117,17 @@ public class Snapshot {
                 byte[] jsonBytes = new byte[jsonLen];
                 dis.readFully(jsonBytes);
 
-                Map<String, Object> root = json.readValue(jsonBytes, Map.class);
+                // Jackson 的 readValue(bytes, Map.class) 在这里等价于
+                // (Map<String,Object>) toPlainValue(parse(text))：fromJson(text, Map.class) 会抛
+                // "deserializePojo failed: java.util.Map"（Map 是接口，拿不到无参构造器），
+                // 而 parse() 的嵌套容器不是 java.util.Map/List，parseCollection 里的
+                // instanceof List 与强转会全部判不中 —— 必须 toPlainValue 摊平。
+                Object plainRoot = JsonUtil.toPlainValue(
+                        JsonUtil.parse(new String(jsonBytes, StandardCharsets.UTF_8)));
+                if (!(plainRoot instanceof Map)) {
+                    throw new IOException("Snapshot payload is not a JSON object");
+                }
+                Map<String, Object> root = (Map<String, Object>) plainRoot;
                 Object cols = root.get("collections");
                 if (cols == null) return new ArrayList<>();
                 List<CollectionData> result = new ArrayList<>();

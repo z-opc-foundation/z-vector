@@ -328,4 +328,8 @@ class ServerIndexContractTest {
         return node instanceof Map ? (Map<String, Object>) node : null;
     }
 
+    private static Map<String, Object> plainMap(byte[] json) {
+        return plainMap(new String(json, StandardCharsets.UTF_8));
+    }
+
 }
