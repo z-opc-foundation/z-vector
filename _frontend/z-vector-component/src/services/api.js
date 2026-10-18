@@ -1,4 +1,4 @@
-import request from '@/common'
+import request from '@yuku123/z-frontend-common'
 
 /**
  * z-vector 管理面数据源。
