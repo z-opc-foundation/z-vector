@@ -20,7 +20,7 @@
 | **仓库** | `z-vector` |
 | **Maven 坐标** | `io.github.yuku123:z-vector:${revision}`（聚合 POM，`packaging=pom`） |
 | **当前版本** | `1.0.5`（根 POM `<properties><revision>1.0.5</revision>` 是全仓唯一定义点，子模块不写自己的 `<version>`） |
-| **父项目** | `io.github.yuku123:z-boot-parent:1.0.21`（`<relativePath/>` 留空，parent 在 repo1 不在磁盘；2026-09-29 之前是 `com.zifang:z-opc:1.0.0-SNAPSHOT`，那个 pom 只在作者本机 `~/.m2` 里） |
+| **父项目** | `io.github.yuku123:z-boot-parent:1.1.0`（`<relativePath/>` 留空，parent 在 repo1 不在磁盘；2026-09-29 之前是 `com.zifang:z-opc:1.0.0-SNAPSHOT`，那个 pom 只在作者本机 `~/.m2` 里） |
 | **Maven Central** | 已发布（repo1 逐坐标 ranged GET 实测 200）：`z-vector` / `-api` / `-core` / `-storage` / `-protocol` / `-grpc-server` / `-spring-boot-starter` / `-server` 八个坐标的 `1.0.4` 与 `1.0.5` 全部 200；`z-vector-api` 的 maven-metadata 显示 `latest = release = 1.0.5`，历史 1.0.1–1.0.5 |
 | **默认端口** | **只有 HTTP，没有 gRPC**：独立 server `6333`（`ZVECTOR_PORT`）、starter 嵌入式 REST `6334`（`zvector.server.port`，`0` = 不起） |
 | **运行口径** | Java 8（`maven.compiler.source/target=1.8`；JDK 9+ 上 `jdk9-plus-release-gate` profile 追加 `release=8` 真闸）；Spring Boot 只出现在 starter 侧 |
@@ -67,7 +67,7 @@
 
 ```
 z-vector/
-├── pom.xml                          # 聚合 POM：parent=z-boot-parent:1.0.21，<revision> 单源，flatten 常开
+├── pom.xml                          # 聚合 POM：parent=z-boot-parent:1.1.0，<revision> 单源，flatten 常开
 ├── Dockerfile                       # 仓根多阶段镜像（当前打不出可运行件，见「部署」）
 ├── LICENSE                          # MIT
 ├── z-vector-api/                    # 抽象层：VectorStore / VectorPoint / SearchResult / VectorCollection /
@@ -105,9 +105,9 @@ starter 共享同一份 Qdrant 风格 REST（路由表定义只有一份），Op
 |------|---------------------------|
 | 语言 / 运行时 | Java 8（`maven.compiler.source/target=1.8`；JDK 9+ 另有 `maven.compiler.release=8` 闸） |
 | 构建 | Maven 多模块；`flatten-maven-plugin` **钉在 1.5.0**（1.6.0 起要求 Maven 3.6.3，而门禁机是 3.6.0，flatten 已常开 ⇒ 抬号会打死全仓构建，PomVersionContractTest 的 P5 尺盯着这条）；`maven-shade-plugin:3.5.1` 打 `z-vector-server` 的 fat jar |
-| 版本供给 | `z-boot-parent:1.0.21` → 第三方地板 `z-boot-dependencies` + 兄弟仓权威表 `z-boot-fleet`；netty 4.1.138.Final、jackson 2.18.6 已改由父链下发，本仓删掉了自钉的 `<netty.version>` / `<jackson.version>` |
+| 版本供给 | `z-boot-parent:1.1.0` → 第三方地板 + 兄弟仓版本槽位均由 parent 自身下发（parent 1.1.0 起**不再经 `z-boot-dependencies` / `z-boot-fleet` 两层间接件** —— 第三方地板直接 inline 在 parent 里（`gen_train_bom.py` 生成），兄弟仓版本槽位也移进了 parent 自身）；netty 4.1.138.Final、jackson 2.18.6 已改由父链下发，本仓删掉了自钉的 `<netty.version>` / `<jackson.version>` |
 | 本仓仍自钉的第三方 | `slf4j 2.0.13`、`junit-jupiter 5.10.2`（父链面值更低）、`snakeyaml 2.0`（直接条目，防被父链降到 1.30）、`grpc 1.65.1` + `protobuf 3.25.5`（**仅 dependencyManagement，无模块引用**） |
-| 工具库复用 | `io.github.yuku123:z-util-{core,math,ml}`：版本 1.0.13 由 fleet 的 `${z-util.version}` 下发（本仓已删自有的 `zutil.version` 键），并显式排除 `log4j-slf4j2-impl` 以免与 Spring Boot 的 `log4j-to-slf4j` 抢日志后端 |
+| 工具库复用 | `io.github.yuku123:z-util-{core,math,ml}`：版本 1.0.13 由 `z-boot-parent` 的兄弟仓版本槽位 `${z-util.version}` 下发（本仓已删自有的 `zutil.version` 键），并显式排除 `log4j-slf4j2-impl` 以免与 Spring Boot 的 `log4j-to-slf4j` 抢日志后端 |
 | Spring Boot | 仅 starter：`spring-boot-autoconfigure` / `-starter-web` / `-starter-actuator` / `-starter-test`，模块 POM 里写的是 **`2.7.12`**（`<optional>true</optional>`），与父链地板的 2.7.18 是两套面值 —— 实际运行版本由消费方自己的 Spring Boot 决定 |
 | HTTP 服务 | JDK 自带 `com.sun.net.httpserver.HttpServer`（两台 server 都是它，不是 Spring MVC），JSON 用 Jackson |
 | 测试 | JUnit 5（`junit-jupiter 5.10.2`）+ `maven-surefire-plugin 3.2.5` |
@@ -367,7 +367,7 @@ docker run -d -p 6333:6333 -e ZVECTOR_DATA_DIR=/data/zvector \
   `z-vector-grpc-server` 的普通 jar —— 该模块没有任何打包插件、MANIFEST 里没有 `Main-Class`，
   `java -jar` 直接 "no main manifest attribute"；`EXPOSE 9090` 也没有任何进程监听。
   它头部注释里"parent 是 `com.zifang:z-opc:1.0.0-SNAPSHOT` 所以换台机器读不动 pom"那一条**已过期**
-  （2026-09-29 parent 已迁到 `z-boot-parent:1.0.21`，repo1 实测 200），但上面两条依旧成立。
+  （2026-09-29 parent 已迁到 `z-boot-parent:1.0.21`、现已到 `1.1.0`，repo1 实测 200），但上面两条依旧成立。
   这一份怎么修已记进 `_doc/007_backlog/feature001_hnsw_v2/TASK.md` 等拍板。
 - 发布：[`_doc/003_script/deploy_maven_center.sh`](_doc/003_script/deploy_maven_center.sh)
   子命令 `publish` / `verify` / `gpg-init` / `readme` / `help`；凭证只从被 `.gitignore` 排除的 `.env`
@@ -389,17 +389,17 @@ MIT —— 见根 [`LICENSE`](LICENSE)（`Copyright (c) 2026 z-opc-foundation`�
 
 本项目文档统一收口在 `_doc/` 下：
 
-- [`_doc/001_arch/08-design-manage-console-frontend.md`](_doc/001_arch/08-design-manage-console-frontend.md) — feature001 规格：后端 REST 统一 + `/_frontend/` 管理台（React 19 + Vite 6 + AntD 6）
-- [`_doc/003_script/`](_doc/003_script/) — 运维脚本（本仓唯一有实文件的分类目录）:
+- [`_doc/001_arch/`](_doc/001_arch/) — 架构与规格：
+  - [`00-overview.md`](_doc/001_arch/00-overview.md) — 项目总览：模块架构、核心功能、上下游、目录结构
+  - [`08-design-manage-console-frontend.md`](_doc/001_arch/08-design-manage-console-frontend.md) — feature001 规格：后端 REST 统一 + `/_frontend/` 管理台（React 19 + Vite 6 + AntD 6）
+- [`_doc/003_script/`](_doc/003_script/) — 运维脚本:
   - [`deploy_maven_center.sh`](_doc/003_script/deploy_maven_center.sh) — Maven Central 发布 / 校验 / GPG 初始化
+  - [`verify_central.sh`](_doc/003_script/verify_central.sh) — 已发布构件的坐标与版本校验
 - [`_doc/007_backlog/`](_doc/007_backlog/) — 待办与收口登记:
   - [`feature001_hnsw_v2/TASK.md`](_doc/007_backlog/feature001_hnsw_v2/TASK.md) — #20「版本号单源」收口登记 +
     四把尺（P1/P2/P3/P5）与 13 支变异电池读数 + 跨 JDK 对账。其 §5.4 记的「gRPC 广告与端口三个互相
     不打照面」「OpenApiSpec 生成了但没有端点服务它」两条，正是本 README「未接入」一节的上游依据。
     注意该目录虽名为 `feature001_hnsw_v2`，里面**不是** HNSW v2 的方案本体（文首已自注这次错位）
-- `_doc/001_arch/` — 目前为空目录，暂无架构文档
-- `_doc/002_deploy/` — 目前为空目录，暂无部署文档
-- `_doc/004_skill/` — 目前为空目录，暂无 skill 定义
 
 `deploy_maven_center.sh` 注释里指向的 `发布指引.md` 在本仓不存在（脚本自身是该目录里唯一的实体）。
 
