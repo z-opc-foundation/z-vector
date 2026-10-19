@@ -92,7 +92,7 @@ z-vector/
 `server → core + storage + grpc-server`，`protocol` **谁也不引**（只在 `grpc-server` 的测试里以 `test` scope 出现）。
 注意 feature001 之后 `z-vector-server` **直接依赖 `z-vector-grpc-server`** —— 独立 server 与内嵌
 starter 共享同一份 Qdrant 风格 REST（路由表定义只有一份），OpenApiSpec 与真实路由形状不再分裂。
-具体路由见 [`_doc/001_feature/001_管理台前端/feature001.md`](_doc/001_feature/001_管理台前端/feature001.md) §4.1。
+具体路由见 [`_doc/001_arch/08-design-manage-console-frontend.md`](_doc/001_arch/08-design-manage-console-frontend.md) §4.1。
 一个容易踩的点：starter **不依赖 `z-vector-storage`** —— `zvector.storage-type: persistent` 是靠
 `Class.forName("com.zifang.z.vector.storage.PersistentVectorStore")` 反射装配的，缺件时只 `log.warn`
 并退回 `InMemoryVectorStore` ⇒ 要持久化必须自己额外引 `z-vector-storage`。
@@ -389,7 +389,7 @@ MIT —— 见根 [`LICENSE`](LICENSE)（`Copyright (c) 2026 z-opc-foundation`�
 
 本项目文档统一收口在 `_doc/` 下：
 
-- [`_doc/001_feature/001_管理台前端/feature001.md`](_doc/001_feature/001_管理台前端/feature001.md) — feature001 规格：后端 REST 统一 + `/_frontend/` 管理台（React 19 + Vite 6 + AntD 6）
+- [`_doc/001_arch/08-design-manage-console-frontend.md`](_doc/001_arch/08-design-manage-console-frontend.md) — feature001 规格：后端 REST 统一 + `/_frontend/` 管理台（React 19 + Vite 6 + AntD 6）
 - [`_doc/003_script/`](_doc/003_script/) — 运维脚本（本仓唯一有实文件的分类目录）:
   - [`deploy_maven_center.sh`](_doc/003_script/deploy_maven_center.sh) — Maven Central 发布 / 校验 / GPG 初始化
 - [`_doc/007_backlog/`](_doc/007_backlog/) — 待办与收口登记:

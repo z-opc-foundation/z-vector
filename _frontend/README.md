@@ -50,7 +50,7 @@ history 模式需要这一条；否则 `/collections` 会被当 SPA 路由返回
 ### 阶段二：一体化部署（本期不实现）
 
 `ZVECTOR_WEB_DIR` 环境变量开启 `z-vector-server` 静态托管 `dist/` + SPA fallback。
-详见 `_doc/001_feature/001_管理台前端/feature001.md` §6.2。
+详见 `_doc/001_arch/08-design-manage-console-frontend.md` §6.2。
 
 ## 目录结构（2026-10-09 分包后）
 
@@ -116,4 +116,4 @@ _frontend/
 
 ## 验证日志
 
-阶段一 E2E 验证见 `_doc/001_feature/001_管理台前端/feature001.md` §7。
+阶段一 E2E 验证见 `_doc/001_arch/08-design-manage-console-frontend.md` §7。
