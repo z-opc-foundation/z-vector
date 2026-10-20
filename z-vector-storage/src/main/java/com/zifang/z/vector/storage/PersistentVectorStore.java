@@ -402,6 +402,20 @@ public class PersistentVectorStore implements VectorStore {
     }
 
     @Override
+    public List<com.zifang.z.vector.api.VectorPoint> scroll(String collectionName, int limit,
+                                                            String offsetId,
+                                                            com.zifang.z.vector.api.Filter filter) {
+        Collection coll = requireCollection(collectionName);
+        return coll.scroll(limit, offsetId, filter);
+    }
+
+    @Override
+    public int deleteByFilter(String collectionName, com.zifang.z.vector.api.Filter filter) {
+        Collection coll = requireCollection(collectionName);
+        return coll.deleteByFilter(filter);
+    }
+
+    @Override
     public long getPointCount(String collectionName) {
         Collection coll = collections.get(collectionName);
         return coll == null ? 0 : coll.count();

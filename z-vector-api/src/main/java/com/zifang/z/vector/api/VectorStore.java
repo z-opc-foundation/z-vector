@@ -107,6 +107,27 @@ public interface VectorStore extends AutoCloseable {
     /** 批量删除 */
     void deletePoints(String collectionName, List<String> ids);
 
+    /**
+     * 按 id 游标遍历一页点（Qdrant {@code /points/scroll} 的语义）。
+     *
+     * <p>实现方须保证遍历顺序稳定 —— {@code offsetId} 取上一页最后一个点 id，
+     * 顺序若不稳定，客户端翻页会漏点或重复。{@code filter} 为 null 表示不过滤。
+     *
+     * <p>默认不支持：纯内存实现没有稳定的持久化遍历序，接入方需显式覆写。
+     */
+    default List<VectorPoint> scroll(String collectionName, int limit, String offsetId,
+                                     Filter filter) {
+        throw new UnsupportedOperationException("scroll is not supported by " + getClass().getSimpleName());
+    }
+
+    /**
+     * 按过滤条件删除并返回实际删除数（Qdrant {@code /points/delete} 的语义）。
+     * {@code filter} 为 null 表示清空整个集合。
+     */
+    default int deleteByFilter(String collectionName, Filter filter) {
+        throw new UnsupportedOperationException("deleteByFilter is not supported by " + getClass().getSimpleName());
+    }
+
     /** 获取集合内的点数量 */
     long getPointCount(String collectionName);
 

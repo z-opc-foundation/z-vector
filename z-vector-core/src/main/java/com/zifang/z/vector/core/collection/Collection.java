@@ -186,6 +186,80 @@ public class Collection {
         return index.size();
     }
 
+    /**
+     * 按 id 升序全量遍历一页，点位供 Qdrant {@code /points/scroll} 使用。
+     *
+     * <p>{@code offsetId} 是上一页返回的最后一个点 id，本页从它<b>之后</b>开始；
+     * {@code null} 表示从头开始。遍历顺序固定为 id 升序 —— 否则「上一页最后一个 id」
+     * 这个游标在翻页之间就失去意义，客户端会漏点或重复。
+     */
+    public List<VectorPoint> scroll(int limit, String offsetId, Filter filter) {
+        if (limit <= 0) return Collections.emptyList();
+        lock.readLock().lock();
+        try {
+            List<VectorPoint> ordered = new ArrayList<>(index.entries());
+            ordered.sort(Comparator.comparing(VectorPoint::getId));
+
+            List<VectorPoint> page = new ArrayList<>(Math.min(limit, ordered.size()));
+            boolean started = offsetId == null;
+            for (VectorPoint p : ordered) {
+                if (!started) {
+                    if (Objects.equals(p.getId(), offsetId)) started = true;
+                    continue;
+                }
+                if (filter != null && !filter.evaluate(p.payloadRef())) continue;
+                // 与 getPoint 一样，外泄副本而不交出索引本体
+                page.add(new VectorPoint(p.getId(), p.vectorRef(), p.payloadRef()));
+                if (page.size() >= limit) break;
+            }
+            return page;
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * 按过滤条件删除，返回实际删除的点数。{@code filter == null} 表示清空该集合。
+     */
+    public int deleteByFilter(Filter filter) {
+        lock.writeLock().lock();
+        try {
+            List<String> victims = new ArrayList<>();
+            if (filter == null) {
+                for (VectorPoint p : index.entries()) victims.add(p.getId());
+            } else {
+                java.util.Set<String> viaIndex = resolvePayload(filter);
+                if (viaIndex != null) {
+                    // 倒排命中：不必全量扫，但要剔除「倒排说有、索引已无」的幽灵 id
+                    for (String id : viaIndex) {
+                        if (index.getRef(id) != null) victims.add(id);
+                    }
+                } else {
+                    // 字段没建索引，倒排给不出答案，退回逐点求值
+                    for (VectorPoint p : index.entries()) {
+                        if (filter.evaluate(p.payloadRef())) victims.add(p.getId());
+                    }
+                }
+            }
+
+            int removed = 0;
+            for (String id : victims) {
+                VectorPoint existing = index.getRef(id);
+                if (index.remove(id)) {
+                    if (existing != null) {
+                        unindexPayload(existing);
+                        payloadTracked--;
+                    }
+                    indexDirty = true;
+                    removed++;
+                }
+            }
+            return removed;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
     // ==================== 搜索 ====================
 
     public List<SearchResult> search(float[] query, int topK, Filter filter) {

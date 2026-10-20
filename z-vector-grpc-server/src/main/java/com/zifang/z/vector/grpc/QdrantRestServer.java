@@ -72,6 +72,8 @@ public class QdrantRestServer {
     private static final Pattern P_SEARCH = Pattern.compile("/collections/.+/points/search");
     private static final Pattern P_COUNT = Pattern.compile("/collections/.+/points/count");
     private static final Pattern P_POINTS_BATCH = Pattern.compile("/collections/.+/points");
+    private static final Pattern P_SCROLL = Pattern.compile("/collections/.+/points/scroll");
+    private static final Pattern P_POINTS_DELETE = Pattern.compile("/collections/.+/points/delete");
     private static final Pattern P_POINT_BY_ID = Pattern.compile("/collections/.+/points/.+");
 
     private static final String PREFIX_COLLECTIONS = "/collections/";
@@ -210,6 +212,28 @@ public class QdrantRestServer {
                         path.length() - "/points".length());
                 if ("PUT".equals(method)) {
                     handleUpsertPoints(exchange, name);
+                } else {
+                    sendError(exchange, 405, "Method not allowed");
+                }
+                return;
+            }
+            // /collections/{name}/points/scroll
+            // 必须排在 P_POINT_BY_ID 之前：那个 pattern 是 /collections/.+/points/.+，
+            // "scroll" 会被当成点 id 直接吞掉，路由永远走不到这里
+            if (P_SCROLL.matcher(path).matches()) {
+                String name = extractCollectionName(path, "/points/scroll");
+                if ("POST".equals(method)) {
+                    handleScroll(exchange, name);
+                } else {
+                    sendError(exchange, 405, "Method not allowed");
+                }
+                return;
+            }
+            // /collections/{name}/points/delete（按 filter 批量删），同样要抢在 P_POINT_BY_ID 前面
+            if (P_POINTS_DELETE.matcher(path).matches()) {
+                String name = extractCollectionName(path, "/points/delete");
+                if ("POST".equals(method)) {
+                    handleDeleteByFilter(exchange, name);
                 } else {
                     sendError(exchange, 405, "Method not allowed");
                 }
@@ -528,6 +552,67 @@ public class QdrantRestServer {
         resp.put("status", "ok");
         resp.put("time_ms", elapsedMs);
         sendJson(exchange, 200, resp);
+    }
+
+    /**
+     * {@code POST /collections/{name}/points/scroll} —— 游标翻页遍历，与 Qdrant 同名端点对齐。
+     *
+     * <p>请求 {@code {limit, offset?, filter?}}；响应 {@code {result:[{id,vector,payload}], next_offset, status}}。
+     * {@code next_offset} 为 null 表示已到末页，客户端据此停手。
+     */
+    private void handleScroll(HttpExchange exchange, String name) throws IOException {
+        Map<String, Object> body = parseJson(exchange);
+        if (!store.hasCollection(name)) {
+            sendError(exchange, 404, "Collection not found: " + name);
+            return;
+        }
+        int limit = ((Number) body.getOrDefault("limit", 10)).intValue();
+        if (limit <= 0) {
+            sendError(exchange, 400, "'limit' must be positive");
+            return;
+        }
+        Object rawOffset = body.get("offset");
+        String offsetId = rawOffset == null ? null : String.valueOf(rawOffset);
+        Filter filter = parseFilter(body.get("filter"));
+
+        // 多取一条只为判断是否还有下一页，不额外暴露给客户端
+        List<VectorPoint> page = store.scroll(name, limit + 1, offsetId, filter);
+        String nextOffset = null;
+        if (page.size() > limit) {
+            page = new ArrayList<>(page.subList(0, limit));
+            nextOffset = page.get(page.size() - 1).getId();
+        }
+
+        List<Map<String, Object>> points = new ArrayList<>(page.size());
+        for (VectorPoint p : page) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", p.getId());
+            item.put("vector", toFloatList(p.getVector()));
+            item.put("payload", p.getPayload());
+            points.add(item);
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("result", points);
+        resp.put("next_offset", nextOffset);
+        resp.put("status", "ok");
+        sendJson(exchange, 200, resp);
+    }
+
+    /**
+     * {@code POST /collections/{name}/points/delete} —— 按 filter 批量删，无 filter 即清空集合。
+     *
+     * <p>响应 {@code {status:"ok", deleted:n}}。批量删除走 {@link Filter#evaluate(Map)} 的既有语义，
+     * 与 {@code /points/search} 的筛选口径完全一致，避免"查得到删不掉"。
+     */
+    private void handleDeleteByFilter(HttpExchange exchange, String name) throws IOException {
+        Map<String, Object> body = parseJson(exchange);
+        if (!store.hasCollection(name)) {
+            sendError(exchange, 404, "Collection not found: " + name);
+            return;
+        }
+        Filter filter = parseFilter(body.get("filter"));
+        int deleted = store.deleteByFilter(name, filter);
+        sendJson(exchange, 200, mapOf("status", "ok", "deleted", deleted));
     }
 
     /**

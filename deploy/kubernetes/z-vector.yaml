@@ -73,7 +73,7 @@ spec:
     spec:
       containers:
         - name: z-vector-server
-          image: z-vector-server:250
+          image: z-vector:local
           imagePullPolicy: Never
           ports:
             - name: rest
@@ -119,12 +119,14 @@ metadata:
   labels:
     app.kubernetes.io/name: z-vector-server
 spec:
+  type: NodePort
   selector:
     app.kubernetes.io/name: z-vector-server
   ports:
     - name: rest
       port: 6333
       targetPort: rest
+      nodePort: 30333
 
 ---
 # ===== 前端 Deployment =====
