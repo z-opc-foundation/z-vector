@@ -165,7 +165,7 @@ IVF 认 `nlist` / `nprobe` / `maxIter`（默认 64 / 8 / 20）；持久化层把
 
 `VectorStoreFactory.persistent(dataDir)` 走的是**同步 WAL 默认档**：`upsert()` 返回即持久，**RPO = 0**。
 要换异步（性能换 RPO）用 `ZVECTOR_WAL_MODE=async`（或 `-Dzvector.wal.mode=async`），
-数字与公式见 [WAL 落盘模式与 RPO](#-wal-落盘模式与-rpo默认同步rpo--0)。
+数字与公式见 [WAL 落盘模式与 RPO](#wal-落盘模式与-rpo默认同步rpo--0)。
 
 ### Spring Boot 应用
 
@@ -204,7 +204,7 @@ zvector:
 
 `wal.mode` 是**持久性语义**（不是调优开关）：`sync` = 每条写入当场 fsync，`upsert()` 返回即持久，
 **RPO = 0**；`async` = 入队即返回、后台整批 fsync，崩溃会丢「队列中尚未落盘的那一段」
-（数字与公式见 [WAL 落盘模式与 RPO](#-wal-落盘模式与-rpo默认同步rpo--0)）。配 `async` 时启动日志会打
+（数字与公式见 [WAL 落盘模式与 RPO](#wal-落盘模式与-rpo默认同步rpo--0)）。配 `async` 时启动日志会打
 **警告文案**把代价说清楚；`wal.mode` 写错值会让应用启动失败（点名 `zvector.wal.mode`），
 显式配了却兑现不了（比如 `z-vector-storage` 不在 classpath 上）也**拒绝启动** ——
 退回内存存储会让显式的持久性要求静默失效。
@@ -304,7 +304,7 @@ VectorStore async = new PersistentVectorStore("/data/zvector", 1000, true, WalMo
 StorageEngine engine = new StorageEngine("/data/zvector", wal, 100_000L, 0.01, 256);
 ```
 
-### 🛡 WAL 落盘模式与 RPO（默认同步，RPO = 0）
+### WAL 落盘模式与 RPO（默认同步，RPO = 0）
 
 | 模式 | 写路径 | `upsert()` 返回时 | RPO（已 ack 却丢的条数） |
 |---|---|---|---|
