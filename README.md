@@ -336,15 +336,51 @@ mvn -pl z-vector-storage -am test    # 单模块（务必带 -am）
 |------|--------|-----------|----------|
 | z-vector-api | 4 | 30 | Filter 表达式、枚举、POJO、Namespace |
 | z-vector-core | 21 | 170 | 4 种距离、Flat/HNSW/IVF、HNSW 图形状与持久化、PayloadIndex 快路径、量化器、DiskAnnIndex、FTS、HybridSearch、KMeansAdapter |
-| z-vector-storage | 22 | 171 | WAL（group commit / rotate / 崩溃恢复）、PageStore / BufferPool / Bloom、PageSnapshot / PointPageCodec、mmap 生命周期、PersistentVectorStore、StorageEngine |
+| z-vector-storage | 24 | 177 | WAL（group commit / rotate / 崩溃恢复）、PageStore / BufferPool / Bloom、PageSnapshot / PointPageCodec、mmap 生命周期、PersistentVectorStore、StorageEngine、**崩溃恢复一致性套件（kill -9 三时点 × 三口径）** |
 | z-vector-protocol | 1 | 6 | ProtocolSpec / OpenAPI 生成 |
-| z-vector-grpc-server | 5 | 33 | `QdrantRestServerTest`、`QdrantRestFilterContractTest`、`QdrantRestIndexContractTest`、`QdrantRestServerPortLifecycleTest`、`OpenApiSpecRoutingTest` |
-| z-vector-spring-boot-starter | 3 | 18 | 自动装配 + REST 生命周期 |
-| z-vector-server | 3 | 30 | 独立 server 索引契约 + POM 版本契约（P1/P2/P3/P5） |
-| **合计** | **59** | **458** | |
+| z-vector-grpc-server | 7 | 40 | `QdrantRestServerTest`、`QdrantRestFilterContractTest`、`QdrantRestIndexContractTest`、`QdrantRestServerPortLifecycleTest`、`OpenApiSpecRoutingTest` |
+| z-vector-spring-boot-starter | 4 | 20 | 自动装配 + REST 生命周期 |
+| z-vector-server | 6 | 49 | 独立 server 索引契约 + POM 版本契约（P1/P2/P3/P5） |
+| **合计** | **67** | **492** | |
+
+> 件数一栏 2026-10-22 重新实测（`find <module>/src/test -name '*Test.java'` +
+> `grep -rho '@Test' <module>/src/test`）。此前几行读数偏旧（grpc-server / starter / server 三行），
+> 本次一并对齐。**仍只报件数、不声明通过数** —— 通过数要看 CI 跑批的日志。
 
 注意 `VectorServiceGrpc` **一条测试都没有**（旧 README 记的 `VectorServiceGrpcTest 7 条` 已不在树上），
 这与"它零调用方"是同一件事的两面。
+
+### 💥 崩溃恢复一致性验证（kill -9 / 断电模拟）
+
+> 「持久化是真的」的唯一证明方式：**写入 N 条 → 从另一个 JVM 里 `kill -9` → 重启 → 三口径对账**。
+
+```bash
+./_doc/003_script/run_crash_consistency_suite.sh            # 三时点矩阵必须全绿
+./_doc/003_script/run_crash_consistency_suite.sh --strict   # 连「已 ack 写入的持久性」探针也必须绿
+mvn -pl z-vector-storage test -Dtest=CrashRecoveryConsistencyTest   # 直接跑套件
+```
+
+| 时点档 | 断点位置 | 期望 |
+|---|---|---|
+| `PRE_CHECKPOINT` | checkpoint **前**（全部数据只在 WAL 里） | 三口径全对，条数恰好 N |
+| `POST_CHECKPOINT` | checkpoint **后**（快照已落盘、WAL 已截断，之后又有新写入） | 快照 + WAL 重放合起来恰好 N |
+| `MID_WAL` | WAL **半途**（写入途中被 kill；另叠一档亲手把 `wal.log` 截断在记录中间的确定性半截尾） | 条数落在区间内，且恢复出来的必须是写入序列的**前缀** |
+
+三口径（每档都自动断言，不靠人眼看日志）：
+
+1. **collection 计数** —— `getPointCount` 与全量 `scroll` 去重后的条数必须相等（无幽灵点 / 重复点）；
+2. **HNSW 图连通性** —— 不是"文件在不在"，而是**图还能不能查**：每个点用自己向量查自己必须命中自己，
+   且从入口点 BFS 必须覆盖全图；
+3. **payload 索引** —— 倒排必须**重建**（过滤要走倒排快路径，不是逐点兜底扫描），且过滤结果行数精确。
+
+* **可重复执行**：数据集固定种子（`seed=20261022`，`dim=16`），断言基线与机器无关；每次跑用独立临时目录。
+* **可挂 CI**：脚本退出码 0/1 可直接当门禁；产物 `z-vector-storage/target/crash-consistency/report.{json,md}`
+  （JSON 给脚本读，Markdown 给人看）。
+* **🔴 已知红点**：默认 v2 引擎的 WAL 是**异步落盘**（`AsyncWalFile` 入队即返回），
+  `upsert()` 返回成功时数据可能还只在内存队列里 ⇒ `kill -9` 会丢已 ack 的写入
+  （实测自然窗口丢 1~4/126 条；人为拖慢 fsync 时 200/200 全丢）。
+  这与引擎 javadoc 承诺的「先写 WAL（**强制 fsync**），再更新内存」不符，已单独立修复卡跟踪，
+  本套件默认不阻断 CI（`--strict` 可把它变成红灯）。
 
 ---
 
