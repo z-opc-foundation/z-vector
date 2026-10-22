@@ -13,6 +13,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.core.env.Environment;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
@@ -59,8 +60,8 @@ public class ZVectorAutoConfiguration {
 
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean(VectorStore.class)
-    public VectorStore vectorStore(ZVectorProperties props) {
-        VectorStore store = newStore(props);
+    public VectorStore vectorStore(ZVectorProperties props, Environment env) {
+        VectorStore store = newStore(props, env);
         ZVectorProperties.DefaultIndex di = props.getDefaultIndex();
         String type = di.getType();
         if (type != null && !type.trim().isEmpty()) {
@@ -72,20 +73,102 @@ public class ZVectorAutoConfiguration {
         return store;
     }
 
-    private static VectorStore newStore(ZVectorProperties props) {
-        log.info("z-vector initializing: storage-type={}, data-dir={}",
-                props.getStorageType(), props.getDataDir());
-        if ("persistent".equalsIgnoreCase(props.getStorageType())) {
-            try {
-                Class<?> clazz = Class.forName("com.zifang.z.vector.storage.PersistentVectorStore");
-                return (VectorStore) clazz.getDeclaredConstructor(String.class)
-                        .newInstance(props.getDataDir());
-            } catch (Exception e) {
-                log.warn("PersistentVectorStore not available, fallback to in-memory: {}", e.getMessage());
-                return new InMemoryVectorStore();
-            }
+    /**
+     * 建 store。
+     * <p>
+     * <b>WAL 模式的兑现纪律</b>：{@code zvector.wal.mode} 是<b>持久性语义</b>，不是调优开关。
+     * 因此：
+     * <ol>
+     *   <li>取值拼错 ⇒ 启动失败（不静默退回默认）；</li>
+     *   <li>显式配了模式却兑现不了（{@code z-vector-storage} 不在 classpath 上）⇒ 启动失败
+     *       —— 退回内存存储会让「我要持久 / 我要 RPO=0」这类显式要求<b>静默失效</b>；</li>
+     *   <li>配了 {@code async} ⇒ 启动日志打警告文案，把代价（RPO ≠ 0）说清楚。</li>
+     * </ol>
+     * 没显式配模式时维持旧行为：{@code z-vector-storage} 不在 classpath 上就退回内存（只警告）。
+     */
+    private static VectorStore newStore(ZVectorProperties props, Environment env) {
+        String mode = parseWalMode(props.getWal().getMode());
+        boolean modeConfigured = env != null && env.containsProperty("zvector.wal.mode");
+        long checkpointInterval = props.getCheckpointInterval();
+        if (checkpointInterval <= 0) {
+            throw new IllegalStateException("zvector.checkpoint-interval=" + checkpointInterval
+                    + " 非法：必须是正整数（每多少条 WAL 记录做一次快照并截断 WAL）");
         }
-        return new InMemoryVectorStore();
+        log.info("z-vector initializing: storage-type={}, data-dir={}, wal.mode={}, checkpoint-interval={}",
+                props.getStorageType(), props.getDataDir(), mode, checkpointInterval);
+        if (!"persistent".equalsIgnoreCase(props.getStorageType())) {
+            return new InMemoryVectorStore();
+        }
+        Class<?> clazz;
+        try {
+            clazz = Class.forName("com.zifang.z.vector.storage.PersistentVectorStore");
+        } catch (ClassNotFoundException | NoClassDefFoundError e) {
+            if (modeConfigured) {
+                throw new IllegalStateException("zvector.wal.mode=" + mode + " 已显式配置，"
+                        + "但 com.zifang.z.vector.storage.PersistentVectorStore 不在 classpath 上 —— "
+                        + "退回内存存储会让显式的持久性要求静默失效，故拒绝启动"
+                        + "（请把 z-vector-storage 加进依赖）");
+            }
+            log.warn("PersistentVectorStore not available, fallback to in-memory: {}", e.getMessage());
+            return new InMemoryVectorStore();
+        }
+        try {
+            return newPersistentStore(clazz, props, mode);
+        } catch (ReflectiveOperationException e) {
+            if (modeConfigured) {
+                throw new IllegalStateException("zvector.wal.mode=" + mode + " 已显式配置，"
+                        + "但 PersistentVectorStore 没能按该模式建起来: " + e, e);
+            }
+            log.warn("PersistentVectorStore not available, fallback to in-memory: {}", e.getMessage());
+            return new InMemoryVectorStore();
+        }
+    }
+
+    /**
+     * 用带 WAL 模式的构造器建持久化 store。
+     * <p>
+     * {@code z-vector-storage} 不是本 starter 的编译依赖（starter 也不该把存储实现强塞给应用），
+     * 所以这里走反射；{@code WalMode} 同样按名反射取。
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static VectorStore newPersistentStore(Class<?> clazz, ZVectorProperties props, String mode)
+            throws ReflectiveOperationException {
+        Class<?> modeClass = Class.forName("com.zifang.z.vector.storage.wal.WalMode");
+        Object modeValue = Enum.valueOf((Class) modeClass.asSubclass(Enum.class),
+                mode.toUpperCase(Locale.ROOT));
+        if ("async".equals(mode)) {
+            log.warn("zvector.wal.mode=async：WAL 走后台整批 fsync（group commit）—— upsert() 返回时"
+                    + "数据可能还只在内存队列里，进程被 kill -9 / 机器断电会丢失已 ack 的写入（RPO ≠ 0，"
+                    + "实测自然窗口丢 1~4/126 条，人为拖慢 fsync 时可丢全批）。"
+                    + "需要「ack 即持久」（RPO = 0）请用默认的 zvector.wal.mode=sync。");
+        }
+        try {
+            java.lang.reflect.Constructor<?> ctor = clazz.getDeclaredConstructor(
+                    String.class, long.class, boolean.class, modeClass);
+            return (VectorStore) ctor.newInstance(props.getDataDir(),
+                    props.getCheckpointInterval(), Boolean.TRUE, modeValue);
+        } catch (NoSuchMethodException e) {
+            throw new IllegalStateException("z-vector-storage 版本过旧：PersistentVectorStore 没有带 WAL 模式的"
+                    + "构造器，兑现不了 zvector.wal.mode=" + mode + "（请升级 z-vector-storage）", e);
+        }
+    }
+
+    /**
+     * 配错一个字母必须让应用起不来，而不是安静退回默认模式 —— 后者正是这一族缺陷的原型：
+     * 属性有值、日志有值、行为没有值。
+     */
+    private static String parseWalMode(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return "sync";
+        }
+        String v = raw.trim().toLowerCase(Locale.ROOT);
+        if ("sync".equals(v) || "async".equals(v)) {
+            return v;
+        }
+        throw new IllegalStateException("zvector.wal.mode=\"" + raw + "\" 不是合法的 WAL 模式。"
+                + "Supported: sync, async"
+                + "（sync = 每条写入当场 fsync，ack 即持久、RPO=0；"
+                + "async = 后台整批 fsync、性能更好但 RPO≠0）");
     }
 
     /**

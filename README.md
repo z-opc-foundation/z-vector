@@ -38,7 +38,7 @@
 | Payload 过滤 | `api/Filter` + `core/filter/PayloadIndex`（HashMap 倒排 + TreeMap 数值范围） | 工厂方法 `eq / ne / gt / gte / lt / lte / inValues / notIn / exists / contains / and / or`，另有实例方法 `not()` |
 | 检索形态 | `api/VectorStore` | `search(topK, Filter)` / `searchRange(distance_threshold)` / `searchBatch(多 query)` / `buildIndex` / `isIndexed` / `getIndexType` / `flush` |
 | 集合生命周期 | `core/collection/Collection` + `api/VectorCollection` | 建 / 查 / 删 / 列集合，`setDefaultIndex` 决定"没显式传 `IndexType`"时吃哪一种 |
-| 持久化 | `storage/PersistentVectorStore` + `storage/engine/StorageEngine` | WAL + Snapshot + 分页存储 + BufferPool + Bloom，见「本地存储」一节 |
+| 持久化 | `storage/PersistentVectorStore` + `storage/engine/StorageEngine` | WAL + Snapshot + 分页存储 + BufferPool + Bloom；**WAL 默认同步落盘（ack 即持久，RPO = 0）**，`async` 为显式性能选项，见「本地存储」一节 |
 | HNSW 图持久化 | `core/index/HnswPersistence`，由 `PersistentVectorStore#tryLoadHnswFromDisk` 调用 | 落 `<dataDir>/hnsw_<collection>.bin`，重启优先 load 而非重建 |
 | mmap 冷读 | `storage/page/MmapPageReader`（`PageStore.useMmap(true)` 打开，默认关） | 读路径走 mmap，写后失效重建视图 |
 | Qdrant 形态 REST | `grpc-server/QdrantRestServer`（JDK `com.sun.net.httpserver`，非 Spring MVC） | 路由与字段见「API 一览」B 表 |
@@ -163,6 +163,10 @@ store.close();             // close() 是 VectorStore 接口上的方法，Persi
 IVF 认 `nlist` / `nprobe` / `maxIter`（默认 64 / 8 / 20）；持久化层把参数存成字符串，
 `IndexFactory.intParam` 同时接受 `Number` 与 `"32"` / `"32.0"` 两种形态，否则每次重启索引参数会静默回落。
 
+`VectorStoreFactory.persistent(dataDir)` 走的是**同步 WAL 默认档**：`upsert()` 返回即持久，**RPO = 0**。
+要换异步（性能换 RPO）用 `ZVECTOR_WAL_MODE=async`（或 `-Dzvector.wal.mode=async`），
+数字与公式见 [WAL 落盘模式与 RPO](#-wal-落盘模式与-rpo默认同步rpo--0)。
+
 ### Spring Boot 应用
 
 ```xml
@@ -181,6 +185,9 @@ IVF 认 `nlist` / `nprobe` / `maxIter`（默认 64 / 8 / 20）；持久化层把
 zvector:
   storage-type: in-memory     # in-memory（默认）/ persistent
   data-dir: /tmp/zvector      # 默认 /tmp/zvector，仅 persistent 时用到
+  checkpoint-interval: 1000    # 每多少条 WAL 记录做一次快照 + 截断 WAL；默认 1000
+  wal:
+    mode: sync                # sync（默认，ack 即持久，RPO=0）/ async（性能选项，RPO≠0）
   server:
     port: 6334                # 嵌入式 Qdrant 形态 REST 端口；0 = 不启动 REST
     auto-start: true          # false = 连 REST 生命周期 Bean 都不建
@@ -194,6 +201,13 @@ zvector:
 `default-index` 只管"没说用哪种索引"的那一支（`createCollection(name, dim, metric)`）；显式传了
 `IndexType` 的调用照本宣科。写一个不存在的索引名会让应用启动失败（`IllegalStateException` 里点名
 `zvector.default-index.type`），不会静默退回 FLAT。
+
+`wal.mode` 是**持久性语义**（不是调优开关）：`sync` = 每条写入当场 fsync，`upsert()` 返回即持久，
+**RPO = 0**；`async` = 入队即返回、后台整批 fsync，崩溃会丢「队列中尚未落盘的那一段」
+（数字与公式见 [WAL 落盘模式与 RPO](#-wal-落盘模式与-rpo默认同步rpo--0)）。配 `async` 时启动日志会打
+**警告文案**把代价说清楚；`wal.mode` 写错值会让应用启动失败（点名 `zvector.wal.mode`），
+显式配了却兑现不了（比如 `z-vector-storage` 不在 classpath 上）也**拒绝启动** ——
+退回内存存储会让显式的持久性要求静默失效。
 
 ### 独立 server（REST，默认 6333）
 
@@ -214,10 +228,12 @@ curl -s localhost:6333/health
 | `ZVECTOR_DATA_DIR` | `/data/zvector` | 数据目录（WAL + Snapshot + HNSW 图） |
 | `ZVECTOR_DEFAULT_INDEX` | 空 | 不带 `index_type` 的建集合请求用哪个索引：`FLAT` / `HNSW` / `IVF`，大小写不敏感；空串 = 不覆盖，走内置 `FLAT` |
 | `ZVECTOR_INDEX_PARAMS` | 空 | 上面那个索引的参数，一个 JSON 对象，例如 `{"M":16,"ef_construction":200}` |
+| `ZVECTOR_WAL_MODE` | `sync` | WAL 落盘模式：`sync` = 每条写入当场 fsync（ack 即持久，**RPO = 0**）；`async` = 后台整批 fsync（性能更好，**RPO ≠ 0**，崩溃会丢已 ack 的一段）。拼错直接启动失败 |
 
 拼错不降级：`ZVECTOR_DEFAULT_INDEX=SPARSE` 或 `ZVECTOR_INDEX_PARAMS='M=7'` 会让进程启动即失败，
-日志里点名是哪一个变量。`/health` 的 `version` 来自构建期资源过滤写进 `build-info.properties` 的
-`${project.version}`，不是手抄字面量。SIGTERM 走 shutdown hook：`server.stop` + 关线程池 + `store.close()`。
+日志里点名是哪一个变量。`ZVECTOR_WAL_MODE=asnyc` 同理。`/health` 的 `version` 来自构建期资源过滤写进
+`build-info.properties` 的 `${project.version}`，不是手抄字面量。SIGTERM 走 shutdown hook：
+`server.stop` + 关线程池 + `store.close()`。
 
 ---
 
@@ -273,17 +289,70 @@ curl -s -X POST localhost:6334/collections/docs/points/search \
 
 ## 💾 本地存储（z-vector-storage 实测件清单）
 
-`PersistentVectorStore(dataDir)` 的默认档位是 `(checkpointInterval=1000, useStorageEngine=true)`，
-`useStorageEngine=false` 退回同步 `WalFile`。`StorageEngine` 默认：Bloom 期望元素 `100_000` /
+`PersistentVectorStore(dataDir)` 的默认档位是 `(checkpointInterval=1000, useStorageEngine=true, walMode=SYNC)`
+—— **WAL 默认同步落盘**，`upsert()` 返回即持久（**RPO = 0**），
+`useStorageEngine=false` 退回同步 `WalFile`（同样恒为同步）。`StorageEngine` 默认：Bloom 期望元素 `100_000` /
 目标假阳率 `0.01`（MurmurHash3-x64-128 + Kirsch-Mitzenmacher 双哈希，无假阴性）、BufferPool `256` 页
-（LRU，暴露 `hits / misses / evictions / hitRate`）、`AsyncWalFile` Group Commit（64 条 / 10ms 满足其一
-即整批一次 fsync，暴露 `totalAppended / totalFlushed / totalBatches / queueSize`）。页大小 64KB，
-header 17B（magic `ZVP1`）+ 尾部 4B CRC32。**这些都在 Java 构造器上，不在 yml 里**：
+（LRU，暴露 `hits / misses / evictions / hitRate`）；WAL 落盘由 `walMode` 决定：`sync` 走
+`WalFile.append`（每条 1 次 write + 1 次 fsync），`async` 才起 `AsyncWalFile` Group Commit
+（64 条 / 10ms 满足其一即整批一次 fsync，暴露 `totalAppended / totalFlushed / totalBatches / queueSize`）。
+页大小 64KB，header 17B（magic `ZVP1`）+ 尾部 4B CRC32。**这些都在 Java 构造器上，不在 yml 里**：
 
 ```java
-VectorStore store = new PersistentVectorStore("/data/zvector", 1000, true);
+VectorStore store = new PersistentVectorStore("/data/zvector", 1000, true);            // 默认 = 同步 WAL
+VectorStore async = new PersistentVectorStore("/data/zvector", 1000, true, WalMode.ASYNC); // 显式异步
 StorageEngine engine = new StorageEngine("/data/zvector", wal, 100_000L, 0.01, 256);
 ```
+
+### 🛡 WAL 落盘模式与 RPO（默认同步，RPO = 0）
+
+| 模式 | 写路径 | `upsert()` 返回时 | RPO（已 ack 却丢的条数） |
+|---|---|---|---|
+| `sync`（**默认**） | 每条记录 1 次 write + 1 次 fsync（`WalFile.append`） | **数据已在磁盘上** | **0 条** |
+| `async` | 入队即返回，后台 flusher 按 64 条 / 10ms 整批 fsync（`AsyncWalFile`） | 数据可能还只在内存队列里 | 队列中尚未落盘的那一段 |
+
+**数字**（来自崩溃恢复一致性套件 `./_doc/003_script/run_crash_consistency_suite.sh`，固定种子可复现；
+`kill -9` 另一个 JVM 之后重启对账）：
+
+| 模式 | `kill -9` 后已 ack 写入的丢失条数 | 口径 |
+|---|---|---|
+| `sync`（默认） | **0 / 200 条** | 套件 `--strict` 口径：已 ack 的写入一条不丢 |
+| `async` | **1~4 / 126 条** | 自然窗口（fsync 正常速度） |
+| `async` | **200 / 200 条** | 人为拖慢 fsync（模拟慢盘 / IO 抖动），全批丢光 |
+
+**公式**：
+
+- `sync`：`RPO = 0 条`（返回前已完成 fsync ⇒ 崩溃只会丢"还没返回给调用方"的写入）。
+- `async`：`RPO ≤ min(队列容量 10000, 当前批 64 + 本次 fsync 期间到达的条数)` **条**；
+  时间上界 `≤ 10ms（DEFAULT_MAX_LATENCY_MS）+ 一次 fsync 耗时`，
+  **flusher 被阻塞时无上界**（那就是 200/200 全丢那一档）。
+- `RPO` 与 `checkpointInterval` **无关**：checkpoint 只决定"崩溃后要重放多少条 WAL"，
+  不决定"已 ack 的数据还在不在"。
+
+**`checkpointInterval` 语义**（`zvector.checkpoint-interval`，默认 `1000`）：
+
+- 每累计 N 条 WAL 记录触发一次 checkpoint：写快照（`snapshot.bin` / `psnap_*` / `hnsw_*.bin`）
+  → 追加一条 CHECKPOINT 记录 → **截断 WAL**。
+- 它决定两件事：**崩溃恢复要重放的条数**（≤ N 条）与**快照写放大**（每 N 条一次全量快照）。
+- 调小 ⇒ 恢复重放更快、快照更频繁（写放大更大）；调大 ⇒ 快照更少、重放更多。**两者都不改变 RPO**。
+- `useStorageEngine=false`（没有异步队列）时 WAL 恒为同步落盘：此时配 `wal.mode=async`
+  属于配置矛盾，构造器直接抛 `IllegalArgumentException`（不静默降级）。
+
+**怎么显式选 async（性能换 RPO）**：
+
+| 入口 | 配置 |
+|---|---|
+| Spring Boot | `zvector.wal.mode: async`（yml）/ `zvector.wal.mode=async`（properties） |
+| 裸 `main()` 进程 | 环境变量 `ZVECTOR_WAL_MODE=async` 或系统属性 `-Dzvector.wal.mode=async` |
+| Java API | `new PersistentVectorStore(dir, 1000, true, WalMode.ASYNC)` |
+
+选 `async` 会有**警告文案**（存储层 + 装配层各一条，名字与取值都点名）：
+
+> WAL 异步模式已启用（walMode=ASYNC）：upsert() 返回时数据可能还只在内存队列里，
+> 进程被 kill -9 / 机器断电会丢失已 ack 的写入（RPO ≠ 0）。
+> 需要「ack 即持久」（RPO = 0）请用默认的 WalMode.SYNC。
+
+写错的取值（`asnyc`）一律**抛异常让应用起不来**，不静默退回 `sync`。
 
 ```
 <dataDir>/
@@ -336,16 +405,17 @@ mvn -pl z-vector-storage -am test    # 单模块（务必带 -am）
 |------|--------|-----------|----------|
 | z-vector-api | 4 | 30 | Filter 表达式、枚举、POJO、Namespace |
 | z-vector-core | 21 | 170 | 4 种距离、Flat/HNSW/IVF、HNSW 图形状与持久化、PayloadIndex 快路径、量化器、DiskAnnIndex、FTS、HybridSearch、KMeansAdapter |
-| z-vector-storage | 24 | 177 | WAL（group commit / rotate / 崩溃恢复）、PageStore / BufferPool / Bloom、PageSnapshot / PointPageCodec、mmap 生命周期、PersistentVectorStore、StorageEngine、**崩溃恢复一致性套件（kill -9 三时点 × 三口径）** |
+| z-vector-storage | 25 | 183 | WAL（group commit / rotate / 崩溃恢复）、PageStore / BufferPool / Bloom、PageSnapshot / PointPageCodec、mmap 生命周期、PersistentVectorStore、StorageEngine、**崩溃恢复一致性套件（kill -9 三时点 × 三口径）**、**WAL 落盘模式契约（默认 sync / 显式 async / 拼错即失败）** |
 | z-vector-protocol | 1 | 6 | ProtocolSpec / OpenAPI 生成 |
 | z-vector-grpc-server | 7 | 40 | `QdrantRestServerTest`、`QdrantRestFilterContractTest`、`QdrantRestIndexContractTest`、`QdrantRestServerPortLifecycleTest`、`OpenApiSpecRoutingTest` |
-| z-vector-spring-boot-starter | 4 | 20 | 自动装配 + REST 生命周期 |
+| z-vector-spring-boot-starter | 5 | 26 | 自动装配 + REST 生命周期 + **`zvector.wal.*` 兑现契约（默认值 / 拼错即失败 / 显式配了却兑现不了就拒绝启动）** |
 | z-vector-server | 6 | 49 | 独立 server 索引契约 + POM 版本契约（P1/P2/P3/P5） |
-| **合计** | **67** | **492** | |
+| **合计** | **69** | **504** | |
 
 > 件数一栏 2026-10-22 重新实测（`find <module>/src/test -name '*Test.java'` +
 > `grep -rho '@Test' <module>/src/test`）。此前几行读数偏旧（grpc-server / starter / server 三行），
-> 本次一并对齐。**仍只报件数、不声明通过数** —— 通过数要看 CI 跑批的日志。
+> 本次一并对齐；同日补 WAL 落盘模式契约两道尺后（storage 24→25 类 / 177→183 条，
+> starter 4→5 类 / 20→26 条）再次实测。**仍只报件数、不声明通过数** —— 通过数要看 CI 跑批的日志。
 
 注意 `VectorServiceGrpc` **一条测试都没有**（旧 README 记的 `VectorServiceGrpcTest 7 条` 已不在树上），
 这与"它零调用方"是同一件事的两面。
@@ -359,6 +429,9 @@ mvn -pl z-vector-storage -am test    # 单模块（务必带 -am）
 ./_doc/003_script/run_crash_consistency_suite.sh --strict   # 连「已 ack 写入的持久性」探针也必须绿
 mvn -pl z-vector-storage test -Dtest=CrashRecoveryConsistencyTest   # 直接跑套件
 ```
+
+> 跑套件前确认环境里**没有** `ZVECTOR_WAL_MODE=async`（或 `-Dzvector.wal.mode=async`）：
+> 那是进程级默认，子进程会跟着切到异步档，探针就会红（那是 `async` 的固有代价，不是缺陷）。
 
 | 时点档 | 断点位置 | 期望 |
 |---|---|---|
@@ -376,11 +449,14 @@ mvn -pl z-vector-storage test -Dtest=CrashRecoveryConsistencyTest   # 直接跑�
 * **可重复执行**：数据集固定种子（`seed=20261022`，`dim=16`），断言基线与机器无关；每次跑用独立临时目录。
 * **可挂 CI**：脚本退出码 0/1 可直接当门禁；产物 `z-vector-storage/target/crash-consistency/report.{json,md}`
   （JSON 给脚本读，Markdown 给人看）。
-* **🔴 已知红点**：默认 v2 引擎的 WAL 是**异步落盘**（`AsyncWalFile` 入队即返回），
-  `upsert()` 返回成功时数据可能还只在内存队列里 ⇒ `kill -9` 会丢已 ack 的写入
-  （实测自然窗口丢 1~4/126 条；人为拖慢 fsync 时 200/200 全丢）。
-  这与引擎 javadoc 承诺的「先写 WAL（**强制 fsync**），再更新内存」不符，已单独立修复卡跟踪，
-  本套件默认不阻断 CI（`--strict` 可把它变成红灯）。
+* **「已 ack 写入的持久性」探针**：第四档专门放大 fsync 窗口（子进程握住底层 WAL 的监视器不放），
+  断言 `kill -9` 之后**已 ack 的写入一条不丢**。
+  * **默认档（`wal.mode=sync`）现在是绿的**：默认改成同步落盘后，探针丢失 **0 / 200 条**，
+    `--strict` 口径下通过（这正是"默认同步 WAL"这条改动要兑现的东西）。
+  * **切到 `wal.mode=async` 会红**：异步落盘时已 ack 的写入在崩溃瞬间可能还在内存队列里
+    （实测自然窗口丢 **1~4 / 126 条**；人为拖慢 fsync 时 **200 / 200 条**全丢）。
+    这是 `async` 这个**显式性能选项**的固有代价，不是默认档的缺陷；
+    修它的卡是 `TASK-20261022-042`（异步模式的已 ack 丢失窗口）。
 
 ---
 

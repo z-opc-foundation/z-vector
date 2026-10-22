@@ -17,6 +17,7 @@ import com.zifang.z.vector.core.index.Index;
 import com.zifang.z.vector.storage.engine.StorageEngine;
 import com.zifang.z.vector.storage.snapshot.HybridSnapshot;
 import com.zifang.z.vector.storage.wal.WalFile;
+import com.zifang.z.vector.storage.wal.WalMode;
 import com.zifang.z.vector.storage.wal.WalOpType;
 import com.zifang.z.vector.storage.wal.WalRecord;
 import org.slf4j.Logger;
@@ -69,35 +70,82 @@ public class PersistentVectorStore implements VectorStore {
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     private final long checkpointInterval; // 每多少条 WAL 触发一次 snapshot
+    private final WalMode walMode;         // WAL 落盘模式：默认 SYNC（ack 即持久，RPO = 0）
     private long walRecordsSinceCheckpoint = 0;
     /** 3 参 createCollection 未显式指定索引时采用；null = 不覆盖，走 FLAT */
     private volatile IndexType defaultIndexType;
     private volatile Map<String, Object> defaultIndexParams = Collections.emptyMap();
 
+    /**
+     * 默认构造：1000 条 checkpoint + v2 引擎 + <b>同步 WAL（RPO = 0）</b>。
+     * <p>
+     * 模式取自进程级默认解析（系统属性 {@code zvector.wal.mode} &gt; 环境变量
+     * {@code ZVECTOR_WAL_MODE} &gt; {@link WalMode#SYNC}）—— 裸 {@code main()} 进程
+     * （如 {@code z-vector-server}）没有 Spring 绑定，这是它唯一的显式开关；
+     * 写错取值一律抛异常（配置写错必须起不来，不静默回落）。
+     */
     public PersistentVectorStore(String dataDir) {
-        this(dataDir, 1000, true); // 默认：1000 条 checkpoint + 启用 v2 引擎
+        this(dataDir, 1000, true, WalMode.resolveDefault());
     }
 
+    /** 同 {@link #PersistentVectorStore(String)}，checkpoint 间隔可配；WAL 模式同进程级默认解析。 */
     public PersistentVectorStore(String dataDir, long checkpointInterval) {
-        this(dataDir, checkpointInterval, true);
+        this(dataDir, checkpointInterval, true, WalMode.resolveDefault());
     }
 
     /**
-     * @param useStorageEngine true = 启用 v2 引擎（AsyncWal + Bloom + BufferPool + PageStore）；<br>
-     *                        false = 退回同步 WAL（用于诊断 / 测试兼容旧路径）。
+     * @param useStorageEngine true = 启用 v2 引擎（Bloom + BufferPool + PageStore + 模式化 WAL）；<br>
+     *                        false = 不用 v2 引擎（直写同步 {@link WalFile}，用于诊断 / 测试兼容旧路径）。<br>
+     *                        注意：{@code false} 时 WAL 恒为同步落盘 —— 异步模式依赖引擎的
+     *                        {@code AsyncWalFile}，没有引擎就没有异步队列。
      */
     public PersistentVectorStore(String dataDir, long checkpointInterval, boolean useStorageEngine) {
+        this(dataDir, checkpointInterval, useStorageEngine, WalMode.resolveDefault());
+    }
+
+    /**
+     * 显式指定 WAL 落盘模式的构造器。
+     *
+     * @param walMode {@link WalMode#SYNC}（<b>默认</b>，RPO = 0：已 ack 的写入不丢）；
+     *                {@link WalMode#ASYNC}（性能选项，RPO ≠ 0：崩溃会丢「队列中尚未落盘的那一段」，
+     *                实测自然窗口 1~4/126 条，人为拖慢 fsync 时可丢全批 —— 代价见 {@link WalMode}）
+     */
+    public PersistentVectorStore(String dataDir, long checkpointInterval, boolean useStorageEngine,
+                                  WalMode walMode) {
         this.dataDir = dataDir;
         this.checkpointInterval = checkpointInterval;
+        if (walMode == null) {
+            throw new IllegalArgumentException("walMode must not be null");
+        }
+        if (!useStorageEngine && walMode == WalMode.ASYNC) {
+            // 异步落盘由引擎的 AsyncWalFile 承担；关掉引擎就没有队列可入 —— 配置矛盾必须早失败。
+            throw new IllegalArgumentException(
+                    "walMode=ASYNC requires the storage engine (useStorageEngine=true): "
+                            + "async WAL is implemented by the engine's AsyncWalFile");
+        }
+        this.walMode = walMode;
         try {
             this.wal = new WalFile(dataDir);
             this.snapshot = new HybridSnapshot(dataDir);
-            this.engine = useStorageEngine ? new StorageEngine(dataDir, wal) : null;
+            this.engine = useStorageEngine
+                    ? new StorageEngine(dataDir, wal, StorageEngine.DEFAULT_BLOOM_EXPECTED,
+                            StorageEngine.DEFAULT_BLOOM_FP_RATE, StorageEngine.DEFAULT_BUFFER_PAGES, walMode)
+                    : null;
             this.engineOwned = useStorageEngine;
             recover();
         } catch (IOException e) {
             throw new VectorException("Failed to initialize PersistentVectorStore: " + e.getMessage(), e);
         }
+        if (walMode == WalMode.ASYNC) {
+            LOG.warn("WAL 异步模式已启用（walMode=ASYNC）：upsert() 返回时数据可能还只在内存队列里，"
+                    + "进程被 kill -9 / 机器断电会丢失已 ack 的写入（RPO ≠ 0）。"
+                    + "需要「ack 即持久」（RPO = 0）请用默认的 WalMode.SYNC。");
+        }
+    }
+
+    /** 生效中的 WAL 落盘模式。 */
+    public WalMode walMode() {
+        return walMode;
     }
 
     // ==================== 恢复 ====================
@@ -544,9 +592,15 @@ public class PersistentVectorStore implements VectorStore {
     }
 
     /**
-     * 统一的 WAL append 入口 — 启用引擎时走 AsyncWal（Group Commit），否则同步写。
+     * 统一的 WAL append 入口 — 落盘语义由 {@link #walMode} 决定。
      * <p>
-     * 这样既保持 API 兼容，又能让现有流程默认获得异步写入性能。
+     * {@link WalMode#SYNC}（默认）：走引擎的同步路径（每条记录一次 write + 一次 fsync）
+     * ⇒ {@code upsert()} 返回即持久，<b>RPO = 0</b>。
+     * <p>
+     * {@link WalMode#ASYNC}：走 {@code AsyncWalFile} 的 group commit（入队即返回）
+     * ⇒ RPO ≠ 0，崩溃会丢「队列中尚未落盘的那一段」。
+     * <p>
+     * 不用引擎（{@code useStorageEngine=false}）时恒为同步落盘 —— 异步队列由引擎实现。
      */
     private void walAppend(WalRecord rec) throws IOException {
         if (engine != null) {
