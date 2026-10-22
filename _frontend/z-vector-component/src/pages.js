@@ -4,3 +4,5 @@
  */
 export { configureVector } from './services/api.js'
 export { appMeta, menuConfig, routes } from './pages-manifest.jsx'
+// 文档页从主入口同名导出（宿主与主壳按这个名字取）
+export { default as ComponentDocPage } from './pages/ComponentDoc.jsx'

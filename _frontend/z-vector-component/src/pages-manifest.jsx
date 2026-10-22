@@ -2,7 +2,7 @@ import CollectionList from './pages/CollectionList.jsx'
 import CollectionDetail from './pages/CollectionDetail.jsx'
 import SearchPlayground from './pages/SearchPlayground.jsx'
 import InstanceStatus from './pages/InstanceStatus.jsx'
-import ComponentDoc from './pages/ComponentDoc.jsx'
+import ComponentDocPage from './pages/ComponentDoc.jsx'
 import HomePage from './pages/HomePage.jsx'
 import { VectorApp } from './index.js'
 import { CloudServerOutlined, DatabaseOutlined, HomeOutlined, ReadOutlined, ThunderboltOutlined } from '@ant-design/icons'
@@ -46,7 +46,7 @@ export const routes = [
     { path: '/z-vector/collections/:name', element: <CollectionDetail /> },
     { path: '/z-vector/search',            element: <SearchPlayground /> },
     { path: '/z-vector/instance',          element: <InstanceStatus /> },
-    { path: '/z-vector/docs',              element: <ComponentDoc /> },
+    { path: '/z-vector/docs',              element: <ComponentDocPage /> },
     { path: '/z-vector/:rest*', Component: VectorApp },
 ]
 
