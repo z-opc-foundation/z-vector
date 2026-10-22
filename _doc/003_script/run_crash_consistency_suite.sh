@@ -5,6 +5,10 @@
 # 验的是「持久化是真的」：写入 N 条 → 从另一个 JVM 里 kill -9 → 重启 → 三口径对账
 #   ① collection 计数   ② HNSW 图连通性（可查性，不是文件在不在）   ③ payload 索引
 # 时点矩阵：checkpoint 前 / checkpoint 后 / WAL 半途（含确定性半截尾）
+# 探针（--strict 下也必须绿）：
+#   ACKED_DURABILITY_PROBE  —— 已 ack 的 upsert 写入在 kill -9 后一条不少
+#   ACKED_MIXED_OPS_PROBE   —— 已 ack 的混合写操作（createCollection + upsert + deletePoint）
+#                              在 kill -9 后状态全对：集合在、条数对、删掉的没复活、该留的一条不少
 #
 # 用法:
 #   ./_doc/003_script/run_crash_consistency_suite.sh            # 三时点矩阵必须全绿

@@ -43,10 +43,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <h2>工作流程</h2>
  * <ol>
  *   <li>启动：从 Snapshot 恢复 + 重放 WAL 中所有记录</li>
- *   <li>写入：先写 WAL（强制 fsync），再更新内存</li>
+ *   <li>写入：先写 WAL，再更新内存 ——
+ *       {@link WalMode#SYNC}（<b>默认</b>）当场 fsync（每条记录一次 write + 一次 fsync）
+ *       ⇒ <b>{@code upsert()} 返回即持久，RPO = 0</b>；
+ *       {@link WalMode#ASYNC} 入队即返回、后台整批 fsync ⇒ RPO ≠ 0
+ *       （丢失窗口 = 崩溃瞬间队列中尚未落盘的那一段，详见 {@link WalMode}）</li>
  *   <li>Checkpoint：定期（每 N 条记录或 M 分钟）创建 Snapshot + 截断 WAL</li>
- *   <li>崩溃恢复：启动时自动 replay WAL，恢复到崩溃前状态</li>
+ *   <li>崩溃恢复：启动时自动 replay WAL ——
+ *       {@link WalMode#SYNC} 下恢复到崩溃前状态（<b>已 ack 的写入一条不少</b>）；
+ *       {@link WalMode#ASYNC} 下恢复到「崩溃瞬间已落盘的那一段」（RPO ≠ 0）</li>
  * </ol>
+ *
+ * <p>持久性契约的实测证明见 {@code _doc/003_script/run_crash_consistency_suite.sh}
+ * （写 N 条 → 另一个 JVM 里 {@code kill -9} → 重启 → 三口径对账）；
+ * 写吞吐的 before / after 对照见 {@code _doc/003_script/run_wal_mode_benchmark.sh}。
  *
  * <h2>使用示例</h2>
  * <pre>{@code
@@ -601,6 +611,9 @@ public class PersistentVectorStore implements VectorStore {
      * ⇒ RPO ≠ 0，崩溃会丢「队列中尚未落盘的那一段」。
      * <p>
      * 不用引擎（{@code useStorageEngine=false}）时恒为同步落盘 —— 异步队列由引擎实现。
+     * <p>
+     * 两条语义都有实测背书：{@code _doc/003_script/run_crash_consistency_suite.sh}
+     * （默认档下 {@code kill -9} 后已 ack 的写入一条不少，含 {@code deletePoint}）。
      */
     private void walAppend(WalRecord rec) throws IOException {
         if (engine != null) {

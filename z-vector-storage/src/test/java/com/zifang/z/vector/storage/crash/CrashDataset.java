@@ -47,6 +47,17 @@ final class CrashDataset {
      */
     static final int MID_WAL_DURABLE_FLOOR = 50;
 
+    /**
+     * 混合写操作探针（{@code ACKED_MIXED_OPS_PROBE}）：写完 N 条之后删掉前多少条。
+     *
+     * <p>为什么要有这一档：只验 upsert 是不够的 —— 「已 ack 即持久」这条契约对
+     * {@code deletePoint} 一样成立，删除记录同样要落盘才能在崩溃后不复活。
+     * 口径放在这里（父子两侧共用），避免两边各写一份常量而悄悄漂移。
+     */
+    static int ackedMixedDeletes(int points) {
+        return points / 4;
+    }
+
     private CrashDataset() {
     }
 

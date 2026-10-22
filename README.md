@@ -320,6 +320,26 @@ StorageEngine engine = new StorageEngine("/data/zvector", wal, 100_000L, 0.01, 2
 | `async` | **1~4 / 126 条** | 自然窗口（fsync 正常速度） |
 | `async` | **200 / 200 条** | 人为拖慢 fsync（模拟慢盘 / IO 抖动），全批丢光 |
 
+**写吞吐的代价（before / after 对照）**（来自 `./_doc/003_script/run_wal_mode_benchmark.sh`；
+1000 点 / dim 64 / 批 64，**单独跑这个脚本**、连跑 3 次取中位；本机 Mac OS X 26.6.2 + JDK 23.0.2）：
+
+| 写法 | before = `async` | after = `sync`（默认） | 代价 |
+|---|---|---|---|
+| 单条 `upsert()` | 71,380 ops/s | 29,066 ops/s | 慢 **2.46×**（-59%） |
+| 批量 `upsertBatch()`（64/批） | 156,269 ops/s | 32,171 ops/s | 慢 **4.86×**（-79%） |
+| p50 延迟（单条 / 批量） | 0.010ms / 0.303ms | 0.028ms / 1.899ms | — |
+
+⚠ **绝对值依赖环境，同批跑会漂**：上表是单独跑基准脚本的中位值；同一个基准混在全量测试里跑
+（磁盘 / GC 状态不同）实测到 `async` 139,262 ops/s、`sync` 21,799 ops/s —— **方向一致、比值更大**。
+结论只用相对关系，别拿绝对值当 SLA。
+⚠ **这组数字强依赖 fsync 速度**：本机 fsync ≈ 30µs（APFS + NVMe），比 `WalFile` javadoc 里记的
+「一次 fsync 8.3ms」的机器快两个数量级 ⇒ **慢盘上代价会远大于上面的倍数**（同步档会退化成 fsync 的速度）。
+
+⚠ **`sync` 档下 `upsertBatch()` 没有走 group commit**：`WalFile.appendBatch`（一批一次 write + 一次 fsync）
+只在 `async` 档的后台 flusher 里被调用（`AsyncWalFile.flushBatch`）；同步档的批量写仍是**逐条 fsync**
+（`PersistentVectorStore.upsertBatch` 逐点调 `walAppend`）⇒ 批量吞吐比异步档低约 4.9×。
+补这一段要给 `StorageEngine` 加 `appendWalBatch`（引擎的 WAL 提交路径）—— 未在本次修复，留档待立项。
+
 **公式**：
 
 - `sync`：`RPO = 0 条`（返回前已完成 fsync ⇒ 崩溃只会丢"还没返回给调用方"的写入）。
@@ -405,17 +425,19 @@ mvn -pl z-vector-storage -am test    # 单模块（务必带 -am）
 |------|--------|-----------|----------|
 | z-vector-api | 4 | 30 | Filter 表达式、枚举、POJO、Namespace |
 | z-vector-core | 21 | 170 | 4 种距离、Flat/HNSW/IVF、HNSW 图形状与持久化、PayloadIndex 快路径、量化器、DiskAnnIndex、FTS、HybridSearch、KMeansAdapter |
-| z-vector-storage | 25 | 183 | WAL（group commit / rotate / 崩溃恢复）、PageStore / BufferPool / Bloom、PageSnapshot / PointPageCodec、mmap 生命周期、PersistentVectorStore、StorageEngine、**崩溃恢复一致性套件（kill -9 三时点 × 三口径）**、**WAL 落盘模式契约（默认 sync / 显式 async / 拼错即失败）** |
+| z-vector-storage | 26 | 185 | WAL（group commit / rotate / 崩溃恢复）、PageStore / BufferPool / Bloom、PageSnapshot / PointPageCodec、mmap 生命周期、PersistentVectorStore、StorageEngine、**崩溃恢复一致性套件（kill -9 三时点 × 三口径）**、**WAL 落盘模式契约（默认 sync / 显式 async / 拼错即失败）**、**WAL 模式写吞吐对照基准（before / after）** |
 | z-vector-protocol | 1 | 6 | ProtocolSpec / OpenAPI 生成 |
 | z-vector-grpc-server | 7 | 40 | `QdrantRestServerTest`、`QdrantRestFilterContractTest`、`QdrantRestIndexContractTest`、`QdrantRestServerPortLifecycleTest`、`OpenApiSpecRoutingTest` |
 | z-vector-spring-boot-starter | 5 | 26 | 自动装配 + REST 生命周期 + **`zvector.wal.*` 兑现契约（默认值 / 拼错即失败 / 显式配了却兑现不了就拒绝启动）** |
 | z-vector-server | 6 | 49 | 独立 server 索引契约 + POM 版本契约（P1/P2/P3/P5） |
-| **合计** | **69** | **504** | |
+| **合计** | **70** | **506** | |
 
 > 件数一栏 2026-10-22 重新实测（`find <module>/src/test -name '*Test.java'` +
 > `grep -rho '@Test' <module>/src/test`）。此前几行读数偏旧（grpc-server / starter / server 三行），
 > 本次一并对齐；同日补 WAL 落盘模式契约两道尺后（storage 24→25 类 / 177→183 条，
-> starter 4→5 类 / 20→26 条）再次实测。**仍只报件数、不声明通过数** —— 通过数要看 CI 跑批的日志。
+> starter 4→5 类 / 20→26 条）再次实测；同日再补「混合写操作持久性探针 + WAL 模式写吞吐基准」
+> （storage 25→26 类 / 183→185 条，合计 69→70 类 / 504→506 条）。
+> **仍只报件数、不声明通过数** —— 通过数要看 CI 跑批的日志。
 
 注意 `VectorServiceGrpc` **一条测试都没有**（旧 README 记的 `VectorServiceGrpcTest 7 条` 已不在树上），
 这与"它零调用方"是同一件事的两面。
@@ -428,6 +450,7 @@ mvn -pl z-vector-storage -am test    # 单模块（务必带 -am）
 ./_doc/003_script/run_crash_consistency_suite.sh            # 三时点矩阵必须全绿
 ./_doc/003_script/run_crash_consistency_suite.sh --strict   # 连「已 ack 写入的持久性」探针也必须绿
 mvn -pl z-vector-storage test -Dtest=CrashRecoveryConsistencyTest   # 直接跑套件
+./_doc/003_script/run_wal_mode_benchmark.sh                  # WAL 模式写吞吐 before/after 对照
 ```
 
 > 跑套件前确认环境里**没有** `ZVECTOR_WAL_MODE=async`（或 `-Dzvector.wal.mode=async`）：
@@ -455,8 +478,11 @@ mvn -pl z-vector-storage test -Dtest=CrashRecoveryConsistencyTest   # 直接跑�
     `--strict` 口径下通过（这正是"默认同步 WAL"这条改动要兑现的东西）。
   * **切到 `wal.mode=async` 会红**：异步落盘时已 ack 的写入在崩溃瞬间可能还在内存队列里
     （实测自然窗口丢 **1~4 / 126 条**；人为拖慢 fsync 时 **200 / 200 条**全丢）。
-    这是 `async` 这个**显式性能选项**的固有代价，不是默认档的缺陷；
-    修它的卡是 `TASK-20261022-042`（异步模式的已 ack 丢失窗口）。
+    这是 `async` 这个**显式性能选项**的固有代价，不是默认档的缺陷。
+* **「已 ack 的混合写操作」探针**：第五档把 `createCollection` + `upsert` + `deletePoint` 全走一遍
+  （**刻意不设持久化屏障** —— 屏障是普通调用方不会做的事，设了就等于把"ack 即持久"的契约偷换掉），
+  断言崩溃后：集合还在、条数恰好是「写 N 条 - 删 M 条」、**删掉的点没有复活**、**该留着的点一条不少**。
+  * 默认档实测：集合在 / 共 **150 条**（200 写 - 50 删）/ 删了却还在 **0** 条 / 该在却没了 **0** 条。
 
 ---
 

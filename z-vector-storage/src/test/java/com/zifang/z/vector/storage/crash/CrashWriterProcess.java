@@ -54,6 +54,18 @@ public final class CrashWriterProcess {
      */
     public static final String MODE_STALLED_FSYNC = "STALLED_FSYNC";
 
+    /**
+     * 探针档 2：<b>混合写操作</b> —— {@code createCollection} + {@code upsert} + {@code deletePoint}
+     * 全部走一遍，然后等着被 kill。
+     *
+     * <p>验的是「已 ack 的写操作一条不少」：集合本身、写入的点、<b>以及删除</b>都要落盘 ——
+     * 删除记录没落盘 ⇒ 崩溃后被删的点会复活；点没落盘 ⇒ 崩溃后整段消失。
+     *
+     * <p><b>刻意不设持久化屏障</b>：屏障（等一次 fsync）是普通调用方不会做的事，
+     * 设了屏障就等于把「ack 即持久」的契约偷换掉。这一档考的就是契约本身。
+     */
+    public static final String MODE_ACKED_MIXED = "ACKED_MIXED";
+
     /** checkpoint 间隔：设成极大值，避免写入过程中自动 checkpoint 把时点档搅乱。 */
     private static final long HUGE_CHECKPOINT_INTERVAL = 100_000_000L;
 
@@ -79,6 +91,8 @@ public final class CrashWriterProcess {
 
         if (MODE_STALLED_FSYNC.equals(mode)) {
             runStalled(dataDir, collection, points, readyFile, holdMillis);
+        } else if (MODE_ACKED_MIXED.equals(mode)) {
+            runAckedMixed(dataDir, collection, points, readyFile, holdMillis);
         } else {
             runNormal(dataDir, collection, mode, points, readyFile, holdMillis);
         }
@@ -162,6 +176,25 @@ public final class CrashWriterProcess {
             System.out.flush();
             hold(holdMillis);
         }
+    }
+
+    // ==================== 混合写操作探针 ====================
+
+    private static void runAckedMixed(String dataDir, String collection, int points,
+                                      Path readyFile, long holdMillis) throws Exception {
+        PersistentVectorStore store = openStore(dataDir);
+        int deletes = CrashDataset.ackedMixedDeletes(points);
+        createCollection(store, collection);
+        writeRange(store, collection, 0, points);
+        // 删除也要「已 ack」：deletePoint 返回 true/false 的那一刻，删除记录必须已经落盘。
+        for (int i = 0; i < deletes; i++) {
+            store.deletePoint(collection, CrashDataset.id(i));
+        }
+        System.out.println("[child] " + points + " upserts + " + deletes + " deletePoints are acked"
+                + " (no durability barrier on purpose: the contract itself is under test)");
+        markReady(readyFile, "ACKED_MIXED");
+        System.out.flush();
+        hold(holdMillis);
     }
 
     // ==================== 工具 ====================

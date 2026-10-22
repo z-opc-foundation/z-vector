@@ -242,6 +242,69 @@ class CrashRecoveryConsistencyTest {
         }
     }
 
+    // ==================== 探针 2：已 ack 的混合写操作（createCollection / upsert / deletePoint）====================
+
+    @Test
+    void ackedMixedOpsSurviveKillNine_probe() throws Exception {
+        CrashConsistencyReport.Scenario sc = REPORT.scenario(
+                "ACKED_MIXED_OPS_PROBE",
+                "探针：已 ack 的混合写操作（createCollection + upsert + deletePoint）在 kill -9 后是否还在");
+
+        int deletes = CrashDataset.ackedMixedDeletes(POINTS);
+        Child child = startChild(CrashWriterProcess.MODE_ACKED_MIXED, POINTS);
+        killNine(child);
+        sc.killSignal = "SIGKILL(9)（子进程<b>不</b>设持久化屏障：考的是「ack 即持久」这条契约本身）";
+
+        PersistentVectorStore store = reopen(child.dataDir);
+        boolean collectionAlive = store.hasCollection(COLLECTION);
+        long recovered = collectionAlive ? store.getPointCount(COLLECTION) : 0L;
+        long expected = POINTS - deletes;
+
+        // 逐条核对两件事：删掉的必须真没了（删除记录没落盘 ⇒ 崩溃后复活）；
+        // 该留着的必须还在（写入没落盘 ⇒ 崩溃后整段消失）。
+        int deletedStillPresent = 0;
+        for (int i = 0; i < deletes; i++) {
+            if (store.getPoint(COLLECTION, CrashDataset.id(i)) != null) {
+                deletedStillPresent++;
+            }
+        }
+        int missingSurvivors = 0;
+        for (int i = deletes; i < POINTS; i++) {
+            if (store.getPoint(COLLECTION, CrashDataset.id(i)) == null) {
+                missingSurvivors++;
+            }
+        }
+
+        boolean red = !collectionAlive
+                || recovered != expected
+                || deletedStillPresent > 0
+                || missingSurvivors > 0;
+        sc.add(new CrashConsistencyReport.Metric(
+                "acked-mixed-ops", "已 ack 的混合写操作的持久性", red ? "RED" : "GREEN",
+                "集合在 + 恰好 " + expected + " 条（" + POINTS + " 写 - " + deletes + " 删），且删掉的必须真没了",
+                "集合" + (collectionAlive ? "在" : "没了") + " / 共 " + recovered + " 条（期望 " + expected
+                        + "）/ 删了却还在 " + deletedStillPresent + " 条 / 该在却没了 " + missingSurvivors + " 条",
+                red ? "已 ack 的写操作没能全部落盘 ⇒ 「ack 即持久」这条契约在混合写路径上不成立"
+                        : "未观察到丢失：集合、写入、删除全部按已 ack 的状态恢复"));
+
+        if (red) {
+            REPORT.finding("🔴 已 ack 的混合写操作在 kill -9 后状态不符 —— 期望 " + expected + " 条，"
+                    + "实际 " + recovered + " 条（删了却还在 " + deletedStillPresent + " 条，"
+                    + "该在却没了 " + missingSurvivors + " 条）。");
+        }
+
+        if (Boolean.getBoolean("crash.strict.durability")) {
+            assertTrue(collectionAlive, "createCollection 已 ack ⇒ 崩溃后集合必须还在");
+            assertEquals(expected, recovered,
+                    "写入 " + POINTS + " 条 + 删除 " + deletes + " 条已 ack ⇒ 崩溃后必须恰好剩 "
+                            + expected + " 条");
+            assertEquals(0, deletedStillPresent,
+                    "deletePoint 已 ack ⇒ 崩溃后被删的点不能复活");
+            assertEquals(0, missingSurvivors,
+                    "upsert 已 ack ⇒ 崩溃后该在的点必须一条不少");
+        }
+    }
+
     /** MID_WAL 档里，子进程在 ready 之前做过持久化屏障 ⇒ 至少这么多点是真的落盘了的。 */
     private static final int MID_WAL_DURABLE_FLOOR = CrashDataset.MID_WAL_DURABLE_FLOOR;
 
