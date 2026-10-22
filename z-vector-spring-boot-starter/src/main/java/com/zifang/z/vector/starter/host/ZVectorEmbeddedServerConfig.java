@@ -36,7 +36,14 @@ public class ZVectorEmbeddedServerConfig {
 
     private static final Logger log = LoggerFactory.getLogger(ZVectorEmbeddedServerConfig.class);
 
-    @Value("${z.vector.server.host:0.0.0.0}")
+    /**
+     * REST server 的 bind 地址。
+     * <p>
+     * 缺省必须是<b>回环</b>：这个 REST 面<b>没有鉴权</b>，绑到通配地址上就等于
+     * 把整个库裸奔给 LAN。改前这里默认 {@code 0.0.0.0}，而且读出来的值<b>根本没传给</b>
+     * {@link QdrantRestServer} —— 配置项读了个寂寞，运行时依然是通配。
+     */
+    @Value("${z.vector.server.host:127.0.0.1}")
     private String host;
 
     @Value("${z.vector.server.port:6334}")
@@ -98,7 +105,7 @@ public class ZVectorEmbeddedServerConfig {
                 return;
             }
             try {
-                server = new QdrantRestServer(store, port);
+                server = new QdrantRestServer(store, host, port);
                 Thread t = new Thread(() -> {
                     try {
                         server.start();
@@ -130,7 +137,10 @@ public class ZVectorEmbeddedServerConfig {
         public boolean isAcceptingConnections() {
             if (!bound) return false;
             try (java.net.Socket s = new java.net.Socket()) {
-                s.connect(new java.net.InetSocketAddress("127.0.0.1", port), 300);
+                // 连 host 本身，不再写死 127.0.0.1：host 现在真的生效了，
+                // 写死回环会在"绑到具体网卡地址"时误报为"没起来"。
+                s.connect(new java.net.InetSocketAddress(
+                        com.zifang.z.vector.grpc.QdrantRestServer.normalizeHost(host), port), 300);
                 return true;
             } catch (java.io.IOException e) {
                 return false;

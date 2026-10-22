@@ -75,6 +75,16 @@ public class VectorServerApplication {
     /** {@code ZVECTOR_PORT} 缺省值。0 表示让内核自己挑端口（测试就用它）。 */
     static final int DEFAULT_PORT = 6333;
     static final String DEFAULT_DATA_DIR = "/data/zvector";
+    /**
+     * {@code ZVECTOR_HOST} 缺省值 —— <b>回环</b>。
+     * <p>
+     * 改前是 {@code new InetSocketAddress(port)}，那个构造恒为通配地址，于是独立部署的
+     * z-vector 也一样把无鉴权的 REST 面裸奔给 LAN。默认值取回环：没配置就该是最保守的那个。
+     * <p>
+     * 注意：走 k8s Service / NodePort 暴露时，进程必须绑到 Pod IP 才收得到转发，
+     * 那种部署要<b>显式</b>设 {@code ZVECTOR_HOST=0.0.0.0}（意图声明，不是默认值兜底）。
+     */
+    static final String DEFAULT_HOST = "127.0.0.1";
 
     /** 内嵌 Qdrant REST：start() 不调它的 start()，而是把它的 handler() 挂到我们自己的 HttpServer。 */
     private static volatile QdrantRestServer qdrant;
@@ -119,6 +129,10 @@ public class VectorServerApplication {
         }
         String dataDir = valueOr(env.get("ZVECTOR_DATA_DIR"), DEFAULT_DATA_DIR);
 
+        // bind 地址：缺省回环。留空也当回环（"配了但配空"不能等于"放通配"）。
+        String host = valueOr(env.get("ZVECTOR_HOST"), DEFAULT_HOST).trim();
+        if (host.isEmpty()) host = DEFAULT_HOST;
+
         String indexRaw = valueOr(env.get("ZVECTOR_DEFAULT_INDEX"), "").trim();
         IndexType defaultIndex = indexRaw.isEmpty() ? null : parseIndexType(indexRaw, "ZVECTOR_DEFAULT_INDEX");
         Map<String, Object> defaultParams = parseIndexParams(
@@ -128,6 +142,7 @@ public class VectorServerApplication {
 
         System.out.println("Starting z-vector server...");
         System.out.println("Port: " + port);
+        System.out.println("Bind host: " + host);
         System.out.println("Data directory: " + dataDir);
         System.out.println("Default index for 3-arg createCollection: "
                 + (defaultIndex == null ? "unset (FLAT)" : defaultIndex + " " + defaultParams));
@@ -138,7 +153,7 @@ public class VectorServerApplication {
         store.setDefaultIndex(defaultIndex, defaultParams);
 
         Instant startedAtInstant = Instant.now();
-        HttpServer server = start(port, store, dataDir, startedAtInstant, corsOrigins);
+        HttpServer server = start(port, host, store, dataDir, startedAtInstant, corsOrigins);
         int bound = server.getAddress().getPort();
 
         // 没有 shutdown hook 时，SIGTERM 直接绕过 close()：WAL 尾部的记录不落 snapshot，
@@ -228,12 +243,25 @@ public class VectorServerApplication {
     /** 绑定 store 并在 port 上起服务。测试用 port=0 拿随机端口。 */
     static HttpServer start(int port, VectorStore store, String dataDir, Instant startedAt,
                             List<String> corsOrigins) throws IOException {
-        QdrantRestServer q = new QdrantRestServer(store, 0);
+        // 旧签名保留：host 缺省回环（不再隐式通配）。
+        return start(port, DEFAULT_HOST, store, dataDir, startedAt, corsOrigins);
+    }
+
+    /**
+     * 绑定 store 并在 host:port 上起服务。
+     * <p>
+     * 改前是 {@code HttpServer.create(new InetSocketAddress(port), 0)} —— 那个构造
+     * <b>恒为通配地址</b>，独立部署的 z-vector 因此把无鉴权的 REST 面裸奔给 LAN。
+     * 现在显式给 host，缺省回环（{@link #DEFAULT_HOST}）。
+     */
+    static HttpServer start(int port, String host, VectorStore store, String dataDir, Instant startedAt,
+                            List<String> corsOrigins) throws IOException {
+        QdrantRestServer q = new QdrantRestServer(store, host, 0);
         // 不调 q.start()：我们要让它的路由挂到本 HttpServer 上，与 /health、/__instance 共用端口。
         qdrant = q;
         VectorServerApplication.startedAt = startedAt;
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+        HttpServer server = HttpServer.create(new InetSocketAddress(host, port), 0);
         serverRef = server;
 
         // 三个上下文按最长前缀挂载：HttpServer 选最长前缀匹配，

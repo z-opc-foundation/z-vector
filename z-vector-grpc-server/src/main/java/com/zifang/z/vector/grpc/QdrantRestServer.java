@@ -79,26 +79,67 @@ public class QdrantRestServer {
     private static final String PREFIX_COLLECTIONS = "/collections/";
     private static final String MARKER_POINTS = "/points/";
 
+    /**
+     * 默认 bind 地址 —— <b>回环</b>，不是通配。
+     * <p>
+     * 通配（{@code 0.0.0.0}）意味着这个无鉴权的 REST 面直接对整个 LAN 裸奔：
+     * 任何一台机器 {@code curl http://<本机IP>:6334/collections} 就能读全库。
+     * 所以"没配置"这个状态<b>必须</b>等于最保守的那个，而不是最宽松的那个 ——
+     * 默认值本身就是默认行为的一处漏洞。
+     */
+    public static final String DEFAULT_BIND_HOST = "127.0.0.1";
+
     private final VectorStore store;
     private volatile HttpServer server;
     /** 请求的端口：0 交给内核挑。start() 之后 {@link #getPort()} 报的是真实端口，不是这个。 */
     private final int port;
+    /** 实际 bind 的地址：默认回环（{@link #DEFAULT_BIND_HOST}），空/空白一律退回回环。 */
+    private final String host;
     /** 内核实际绑上的端口；-1 = 还没起来。 */
     private volatile int boundPort = -1;
     /** start() 交出去的工作线程池：stop() 必须关掉它，否则每起停一次就漏 8 条线程。 */
     private volatile ExecutorService executor;
 
+    /**
+     * 旧构造 —— 保留，但<b>不再裸奔</b>：委托到带 host 的构造，host 缺省回环。
+     * <p>
+     * 改前这里等价于 {@code new InetSocketAddress(port)}，那个构造<b>恒为通配地址</b>，
+     * 于是"忘了传 host"这个最常见的情况，恰好是最不安全的那种。
+     */
     public QdrantRestServer(int port) {
-        this(new com.zifang.z.vector.core.InMemoryVectorStore(), port);
+        this(new com.zifang.z.vector.core.InMemoryVectorStore(), DEFAULT_BIND_HOST, port);
     }
 
+    /**
+     * 旧构造 —— 同上，host 缺省回环，不再隐式通配。
+     */
     public QdrantRestServer(VectorStore store, int port) {
+        this(store, DEFAULT_BIND_HOST, port);
+    }
+
+    /**
+     * 带 bind host 的构造 —— <b>唯一</b>能显式指定监听地址的入口。
+     *
+     * @param host  bind 地址；{@code null} / 空白一律退回 {@link #DEFAULT_BIND_HOST}（回环）。
+     *              传 {@code 0.0.0.0} 才会真的对 LAN 暴露，调用方得自己为此负责。
+     * @param port  监听端口；0 = 交给内核挑。
+     */
+    public QdrantRestServer(VectorStore store, String host, int port) {
         this.store = store;
+        this.host = normalizeHost(host);
         this.port = port;
     }
 
+    /** host 归一：空白/null ⇒ 回环。绝不因为"没填"就退到通配。 */
+    public static String normalizeHost(String host) {
+        if (host == null) return DEFAULT_BIND_HOST;
+        String h = host.trim();
+        return h.isEmpty() ? DEFAULT_BIND_HOST : h;
+    }
+
     public void start() throws IOException {
-        HttpServer s = HttpServer.create(new InetSocketAddress(port), 0);
+        // 有 host 的构造才谈得上"只对本机开放"；InetSocketAddress(int) 恒为通配，不要再用它。
+        HttpServer s = HttpServer.create(new InetSocketAddress(host, port), 0);
         // 线程要给名字：stop() 之后"这批线程确实没了"是唯一能观测的关闭证据，没有名字就只能
         // 在全局线程表里猜哪些是本服务的（HttpServer 的工作线程是按需建的，不起请求根本不存在）。
         ThreadFactory named = new ThreadFactory() {
@@ -116,7 +157,7 @@ public class QdrantRestServer {
         this.executor = ex;
         this.server = s;
         this.boundPort = s.getAddress().getPort();
-        log.info("Qdrant REST API started on port {}", getPort());
+        log.info("Qdrant REST API started on {}:{}", host, getPort());
     }
 
     public void stop() {
@@ -155,6 +196,22 @@ public class QdrantRestServer {
     public int getPort() {
         int bound = boundPort;
         return bound >= 0 ? bound : port;
+    }
+
+    /**
+     * 配置的 bind 地址 —— 没 start 也能问。
+     * <p>
+     * 这条不是装饰：验收"6334 不再裸奔"要看的就是<b>绑到了哪个地址</b>，
+     * 而不是"配置里写了什么"。
+     */
+    public String getBindHost() {
+        return host;
+    }
+
+    /** 实际绑上的地址（{@code InetSocketAddress.getHostString()}）；未启动时是空串。 */
+    public String getBoundAddress() {
+        HttpServer s = server;
+        return s == null ? "" : s.getAddress().getHostString();
     }
 
     // ==================== 路由分发 ====================
