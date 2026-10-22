@@ -32,6 +32,13 @@ export default defineConfig({
                 'react-router-dom',
                 'antd',
                 '@ant-design/icons', 'axios',
+                // 基座（含 /ui 子路径）必须 external：rollup 的 external 是**精确字符串匹配**，
+                // 只写主桶的话，源码里的 '@yuku123/z-frontend-common/ui' 会被当普通依赖整包打进
+                // 本包 dist —— 共享基座就多了一份副本，单一真源被打破，且包体膨胀。
+                // 三个子路径必须逐个列出。
+                '@yuku123/z-frontend-common',
+                '@yuku123/z-frontend-common/ui',
+                '@yuku123/z-frontend-common/ui/echarts',
             ],
         },
     },

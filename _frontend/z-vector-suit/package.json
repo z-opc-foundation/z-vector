@@ -11,9 +11,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@yuku123/z-vector-component": "^0.1.0",
-    "@yuku123/z-frontend-common": "^1.0.0",
     "@ant-design/icons": "^6.1.0",
+    "@yuku123/z-frontend-common": "^1.1.5",
+    "@yuku123/z-vector-component": "^0.1.0",
     "antd": "^6.3.3",
     "dayjs": "^1.11.0",
     "react": "^19.2.0",
