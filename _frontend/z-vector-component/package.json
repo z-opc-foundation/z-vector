@@ -1,6 +1,6 @@
 {
   "name": "@yuku123/z-vector-component",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "z-vector 可复用前端组件：ui primitives + AdminShell 布局架。props-only 零 fetch（lead 005 §9.3），跨仓共享唯一面",
   "type": "module",
   "main": "./dist/index.js",
