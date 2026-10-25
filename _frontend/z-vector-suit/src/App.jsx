@@ -7,6 +7,8 @@ import { EmptyState, LoginPage } from '@yuku123/z-vector-component'
 // 2026-10-09 pages 归位（lead 005 §9.3）：页面+api 迁 component 的 ./pages entry，
 // suit 只留壳——从 '@yuku123/z-vector-component/pages' 读 manifest。
 import { menuConfig, routes, appMeta } from '@yuku123/z-vector-component/pages'
+// 版本号只认 package.json，避免顶栏版本与发版号两处各写一遍慢慢漂移。
+import { version as appVersion } from '../package.json'
 
 class ErrorBoundary extends Component {
     constructor(props) { super(props); this.state = { err: null } }
@@ -29,8 +31,16 @@ function NotFound() {
     )
 }
 
-// lead 008 §16：短期 hard-coded 登录（admin / 123456），待 SSO 接入前使用
-const MOCK_AUTH = { username: 'admin', password: '123456', user: { name: 'admin', role: '管理员' } }
+// lead 008 §16：CTC/SSO 接入前的 mock 登录。
+// mock 账号不写死在仓里（001 凭证规范）：构建期注入 VITE_MOCK_USER / VITE_MOCK_PASSWORD；
+// 未注入 ⇒ 不传 mockAuth，LoginPage 走真实 /auth/login 路径（SSO 接入后的原生形态）。
+const MOCK_AUTH = import.meta.env.VITE_MOCK_USER && import.meta.env.VITE_MOCK_PASSWORD
+    ? {
+        username: import.meta.env.VITE_MOCK_USER,
+        password: import.meta.env.VITE_MOCK_PASSWORD,
+        user: { name: import.meta.env.VITE_MOCK_USER, role: '管理员' },
+    }
+    : undefined
 
 function LoginRoute() {
     return (
@@ -66,7 +76,7 @@ function ProtectedShell() {
             menuItems={menuConfig}
             appTitle={appMeta.title}
             appShort={appMeta.short}
-            appVersion="1.0.5"
+            appVersion={appVersion}
             appUser={user}
             appIcon={{ icon: <img src="/icon.png" alt={appMeta.title} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 8 }} />, color: '#7c3aed', label: appMeta.title }}
         />
