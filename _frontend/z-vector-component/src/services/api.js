@@ -1,6 +1,19 @@
 import request from '@yuku123/z-frontend-common'
 
 /**
+ * ⚠ 2026-10-25 修（生产实测：「集合列表读取失败：collections 字段不是数组，拿到的是 undefined」）。
+ *   这里的每个方法原来都写着 `.then((r) => r.data)` ——
+ *   而 @yuku123/z-frontend-common 的响应拦截器**已经把响应体解包过一次**
+ *   （`unwrapResponse`：body 同时带 `code` 与 `data` 时返回 `body.data`，否则返回 body 本身）。
+ *   ⇒ 再取一次 `.data` 就是**解包两次** ⇒
+ *     · body 是 {status:"ok", collections:[…]} 这类裸对象 ⇒ `r.data` = undefined
+ *       ⇒ CollectionList 判 `!Array.isArray(list.collections)` ⇒ 报「collections 字段不是数组」，
+ *         并把真因（后端没 bind / 端口没起）一并说错。
+ *   ⇒ 本组件的 api 层**直接返回解包后的 body**（与 z-msg / z-cache / z-gw 同一写法），
+ *     页面侧 `await vectorApi.listCollections()` 拿到的就是 body 本身。
+ */
+
+/**
  * z-vector 管理面数据源。
  *
  * 实测结论（2026-09-24）：Qdrant 风格的 REST 面不是 Spring MVC，而是 z-vector-grpc-server 的
@@ -18,15 +31,15 @@ import request from '@yuku123/z-frontend-common'
  * 失败时后端返回 {status:"error", code, message} 且 HTTP 状态码同 code（axios 会走 reject 分支）。
  */
 export const vectorApi = {
-    instance: () => request.get('/vector/__instance').then((r) => r.data),
-    listCollections: () => request.get('/vector/collections').then((r) => r.data),
-    collection: (name) => request.get(`/vector/collections/${encodeURIComponent(name)}`).then((r) => r.data),
-    pointCount: (name) => request.get(`/vector/collections/${encodeURIComponent(name)}/points/count`).then((r) => r.data),
-    createCollection: (name, body) => request.put(`/vector/collections/${encodeURIComponent(name)}`, body).then((r) => r.data),
-    deleteCollection: (name) => request.delete(`/vector/collections/${encodeURIComponent(name)}`).then((r) => r.data),
+    instance: () => request.get('/vector/__instance'),
+    listCollections: () => request.get('/vector/collections'),
+    collection: (name) => request.get(`/vector/collections/${encodeURIComponent(name)}`),
+    pointCount: (name) => request.get(`/vector/collections/${encodeURIComponent(name)}/points/count`),
+    createCollection: (name, body) => request.put(`/vector/collections/${encodeURIComponent(name)}`, body),
+    deleteCollection: (name) => request.delete(`/vector/collections/${encodeURIComponent(name)}`),
     upsertPoints: (name, points) =>
-        request.put(`/vector/collections/${encodeURIComponent(name)}/points`, {points}).then((r) => r.data),
-    search: (name, body) => request.post(`/vector/collections/${encodeURIComponent(name)}/points/search`, body).then((r) => r.data),
+        request.put(`/vector/collections/${encodeURIComponent(name)}/points`, {points}),
+    search: (name, body) => request.post(`/vector/collections/${encodeURIComponent(name)}/points/search`, body),
 }
 
 /**
