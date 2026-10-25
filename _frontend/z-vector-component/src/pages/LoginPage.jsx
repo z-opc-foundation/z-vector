@@ -30,7 +30,7 @@ export default function LoginPage({
                     if (onSuccess) onSuccess({ token: 'mock-' + mockAuth.username, user })
                     else window.location.href = redirectUrl
                 } else {
-                    message.error('用户名或密码错误（mock 模式默认 admin/123456）')
+                    message.error('用户名或密码错误')
                 }
                 return
             }
@@ -86,7 +86,7 @@ export default function LoginPage({
                     </Form.Item>
                     {mockAuth && (
                         <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12 }}>
-                            Mock 模式：用户名 <b>{mockAuth.username}</b> / 密码 <b>{mockAuth.password}</b>
+                            Mock 模式：账号由调用方注入
                         </div>
                     )}
                 </Form>
