@@ -3,7 +3,7 @@ import { Alert, Button, Card, Checkbox, Empty, Input, InputNumber, Select, Space
 import { ThunderboltOutlined } from '@ant-design/icons'
 import { useSearchParams } from 'react-router-dom'
 import { vectorApi, vectorErrorText } from '../services/api.js'
-import {EmptyState} from '@yuku123/z-frontend-common/ui'
+import {DEFAULT_PAGINATION, EmptyState} from '@yuku123/z-frontend-common/ui'
 
 /**
  * 向量检索 —— 真发一次 POST /collections/{n}/points/search，把后端给的 result 原样渲染。
@@ -176,7 +176,7 @@ export default function SearchPlayground() {
                                rowKey={(r, i) => `${r.id}-${i}`}
                                loading={loading}
                                dataSource={hits}
-                               pagination={false}
+                               pagination={DEFAULT_PAGINATION}
                                columns={[
                                    { title: '排名', key: 'rank', width: 60, render: (_, __, i) => i + 1 },
                                    { title: '向量 ID', dataIndex: 'id', key: 'id' },
