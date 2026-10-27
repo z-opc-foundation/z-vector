@@ -1,24 +1,14 @@
-import { Component, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
-// lead 008 §6 单一真源：AppLayout 直接从 _shared 取，z-vector-component 不再保留副本
+// lead 008 §6 单一真源：AppLayout 从 registry 依赖 @yuku123/z-frontend-common 取
 // （component/src/layout/index.jsx 已退化为 re-export 兼容旧 npm 调用方）
-import { AppLayout } from '@yuku123/z-frontend-common'
+import { AppLayout, ErrorBoundary } from '@yuku123/z-frontend-common'
 import { EmptyState, LoginPage } from '@yuku123/z-vector-component'
 // 2026-10-09 pages 归位（lead 005 §9.3）：页面+api 迁 component 的 ./pages entry，
 // suit 只留壳——从 '@yuku123/z-vector-component/pages' 读 manifest。
 import { menuConfig, routes, appMeta } from '@yuku123/z-vector-component/pages'
 // 版本号只认 package.json，避免顶栏版本与发版号两处各写一遍慢慢漂移。
 import { version as appVersion } from '../package.json'
-
-class ErrorBoundary extends Component {
-    constructor(props) { super(props); this.state = { err: null } }
-    static getDerivedStateFromError(err) { return { err } }
-    componentDidCatch(err, info) { console.error('[App ErrorBoundary]', err, info) }
-    render() {
-        if (this.state.err) return <pre style={{padding: 24, color: 'red', whiteSpace: 'pre-wrap'}}>{String(this.state.err?.stack || this.state.err)}</pre>
-        return this.props.children
-    }
-}
 
 function NotFound() {
     return (

@@ -1,4 +1,4 @@
-import request from '@yuku123/z-frontend-common'
+import {request} from '@yuku123/z-frontend-common'
 
 /**
  * ⚠ 2026-10-25 修（生产实测：「集合列表读取失败：collections 字段不是数组，拿到的是 undefined」）。
