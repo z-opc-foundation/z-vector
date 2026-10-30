@@ -14,7 +14,7 @@
 
     <artifactId>z-vector-spring-boot-starter</artifactId>
     <packaging>jar</packaging>
-<name>z-vector :: spring-boot-starter</name>
+    <name>z-vector :: spring-boot-starter</name>
     <description>
         z-vector Spring Boot 自动装配 — 一行引入即可获得 z-vector 全部能力。
         通过 spring.factories 自动加载，提供 REST 控制器、健康检查、配置属性。

@@ -23,7 +23,7 @@
     <groupId>io.github.yuku123</groupId>
     <version>${revision}</version>
     <packaging>pom</packaging>
-<name>z-vector :: root</name>
+    <name>z-vector :: root</name>
     <description>
         自研向量数据库 — 对标 Milvus / Qdrant / zvec / LanceDB / Chroma.
         设计融合: zvec 的 in-process 嵌入式架构 + LanceDB 的列存思想 + Chroma 的分层微服务.

@@ -14,7 +14,7 @@
 
     <artifactId>z-vector-storage</artifactId>
     <packaging>jar</packaging>
-<name>z-vector :: storage</name>
+    <name>z-vector :: storage</name>
     <description>
         z-vector 持久化层 — Write-Ahead Log (WAL) + Snapshot + 二进制序列化.
         设计参考 zvec 的 LocalWalFile + LanceDB 的 Manifest + Faiss 的 I/O.
