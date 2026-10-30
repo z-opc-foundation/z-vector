@@ -14,7 +14,7 @@
 
     <artifactId>z-vector-api</artifactId>
     <packaging>jar</packaging>
-    <name>z-vector-api</name>
+<name>z-vector :: api</name>
     <description>
         z-vector 公开 API 与数据模型 — 定义向量存储抽象、Collection、Point、SearchResult.
         所有跨模块共享的契约在这里定义，不依赖任何业务模块。

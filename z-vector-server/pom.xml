@@ -14,7 +14,7 @@
     <groupId>io.github.yuku123</groupId>
     <artifactId>z-vector-server</artifactId>
     <packaging>jar</packaging>
-    <name>z-vector-server</name>
+<name>z-vector :: server</name>
     <description>z-vector standalone server with REST API</description>
 
     <url>https://github.com/yuku123/z-vector</url>
