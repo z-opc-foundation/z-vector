@@ -4,7 +4,6 @@
 /target/
 .idea/
 */target/
-*\target\
 */metastore_db
 /logs
 */logs/
