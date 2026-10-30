@@ -40,3 +40,9 @@
 
 # ===== 本地 zvector-server 数据目录(起服务时 ZVECTOR_DATA_DIR 指这里) =====
 /_tmp-zvector/
+
+# ============ vite 构建旧产物（沙箱删除闸 ⇒ 只移不删，遗留带时间戳的兄弟目录） ============
+dist.stale-*/
+**/dist.stale-*/
+dist.bak-*/
+**/dist.bak-*/

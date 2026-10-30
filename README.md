@@ -20,10 +20,10 @@
 | **仓库** | `z-vector` |
 | **Maven 坐标** | `io.github.yuku123:z-vector:${revision}`（聚合 POM，`packaging=pom`） |
 | **当前版本** | `1.0.5`（根 POM `<properties><revision>1.0.5</revision>` 是全仓唯一定义点，子模块不写自己的 `<version>`） |
-| **父项目** | `io.github.yuku123:z-boot-parent:1.1.0`（`<relativePath/>` 留空，parent 在 repo1 不在磁盘；2026-09-29 之前是 `com.zifang:z-opc:1.0.0-SNAPSHOT`，那个 pom 只在作者本机 `~/.m2` 里） |
+| **父项目** | `io.github.yuku123:z-boot-parent:1.2.0`（`<relativePath/>` 留空，parent 在 repo1 不在磁盘；2026-09-29 之前是 `com.zifang:z-opc:1.0.0-SNAPSHOT`，那个 pom 只在作者本机 `~/.m2` 里） |
 | **Maven Central** | 已发布（repo1 逐坐标 ranged GET 实测 200）：`z-vector` / `-api` / `-core` / `-storage` / `-protocol` / `-grpc-server` / `-spring-boot-starter` / `-server` 八个坐标的 `1.0.4` 与 `1.0.5` 全部 200；`z-vector-api` 的 maven-metadata 显示 `latest = release = 1.0.5`，历史 1.0.1–1.0.5 |
 | **默认端口** | **只有 HTTP，没有 gRPC**：独立 server `6333`（`ZVECTOR_PORT`）、starter 嵌入式 REST `6334`（`zvector.server.port`，`0` = 不起） |
-| **运行口径** | Java 8（`maven.compiler.source/target=1.8`；JDK 9+ 上 `jdk9-plus-release-gate` profile 追加 `release=8` 真闸）；Spring Boot 只出现在 starter 侧 |
+| **运行口径** | Java 17（`maven.compiler.source/target=17`；JDK 9+ 上 `jdk9-plus-release-gate` profile 追加 `release=8` 真闸）；Spring Boot 只出现在 starter 侧 |
 | **Reactor 模块** | 7 个（见结构树）；全仓 grep 不到任何 `maven.deploy.skip` ⇒ 8 个坐标（含聚合 POM）一起发 |
 | **最近更新** | 2026-09-30 |
 
@@ -67,7 +67,7 @@
 
 ```
 z-vector/
-├── pom.xml                          # 聚合 POM：parent=z-boot-parent:1.1.0，<revision> 单源，flatten 常开
+├── pom.xml                          # 聚合 POM：parent=z-boot-parent:1.2.0，<revision> 单源，flatten 常开
 ├── Dockerfile                       # 仓根多阶段镜像（当前打不出可运行件，见「部署」）
 ├── LICENSE                          # MIT
 ├── z-vector-api/                    # 抽象层：VectorStore / VectorPoint / SearchResult / VectorCollection /
@@ -103,9 +103,9 @@ starter 共享同一份 Qdrant 风格 REST（路由表定义只有一份），Op
 
 | 层级 | 技术（全部取自 POM 实测） |
 |------|---------------------------|
-| 语言 / 运行时 | Java 8（`maven.compiler.source/target=1.8`；JDK 9+ 另有 `maven.compiler.release=8` 闸） |
+| 语言 / 运行时 | Java 17（`maven.compiler.source/target=17`；JDK 9+ 另有 `maven.compiler.release=17` 闸） |
 | 构建 | Maven 多模块；`flatten-maven-plugin` **钉在 1.5.0**（1.6.0 起要求 Maven 3.6.3，而门禁机是 3.6.0，flatten 已常开 ⇒ 抬号会打死全仓构建，PomVersionContractTest 的 P5 尺盯着这条）；`maven-shade-plugin:3.5.1` 打 `z-vector-server` 的 fat jar |
-| 版本供给 | `z-boot-parent:1.1.0` → 第三方地板 + 兄弟仓版本槽位均由 parent 自身下发（parent 1.1.0 起**不再经 `z-boot-dependencies` / `z-boot-fleet` 两层间接件** —— 第三方地板直接 inline 在 parent 里（`gen_train_bom.py` 生成），兄弟仓版本槽位也移进了 parent 自身）；netty 4.1.138.Final、jackson 2.18.6 已改由父链下发，本仓删掉了自钉的 `<netty.version>` / `<jackson.version>` |
+| 版本供给 | `z-boot-parent:1.2.0` → 第三方地板 + 兄弟仓版本槽位均由 parent 自身下发（parent 1.1.0 起**不再经 `z-boot-dependencies` / `z-boot-fleet` 两层间接件** —— 第三方地板直接 inline 在 parent 里（`gen_train_bom.py` 生成），兄弟仓版本槽位也移进了 parent 自身）；netty 4.1.138.Final、jackson 2.18.6 已改由父链下发，本仓删掉了自钉的 `<netty.version>` / `<jackson.version>` |
 | 本仓仍自钉的第三方 | `slf4j 2.0.13`、`junit-jupiter 5.10.2`（父链面值更低）、`snakeyaml 2.0`（直接条目，防被父链降到 1.30）、`grpc 1.65.1` + `protobuf 3.25.5`（**仅 dependencyManagement，无模块引用**） |
 | 工具库复用 | `io.github.yuku123:z-util-{core,math,ml}`：版本 1.0.13 由 `z-boot-parent` 的兄弟仓版本槽位 `${z-util.version}` 下发（本仓已删自有的 `zutil.version` 键），并显式排除 `log4j-slf4j2-impl` 以免与 Spring Boot 的 `log4j-to-slf4j` 抢日志后端 |
 | Spring Boot | 仅 starter：`spring-boot-autoconfigure` / `-starter-web` / `-starter-actuator` / `-starter-test`，模块 POM 里写的是 **`2.7.12`**（`<optional>true</optional>`），与父链地板的 2.7.18 是两套面值 —— 实际运行版本由消费方自己的 Spring Boot 决定 |

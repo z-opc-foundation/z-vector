@@ -1,13 +1,14 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import {safeEmptyOutDir} from '../../build-tools/safe-vite-plugin.mjs'
 
 // z-vector 组件层 — Vite library mode 配置（lead 005 §1.2 / §9）
 // 产物：dist/index.js（ES Module，外部化 react/antd 全家）
 // 引用方：同仓 _frontend/z-vector-suit/（file: 协议）或外部项目（npm install）
 // AppLayout 已撤：suit 直接走 @yuku123/z-frontend-common@^1.0.0（npm，z-opc-foundation/z-frontend-common 仓）。
 export default defineConfig({
-    plugins: [react()],
+    plugins: [safeEmptyOutDir(), react()],
     resolve: {
         alias: {
             '@': path.resolve(__dirname, 'src'),
@@ -22,7 +23,7 @@ export default defineConfig({
             formats: ['es'],
         },
         outDir: 'dist',
-        emptyOutDir: true,
+        emptyOutDir: false,
         sourcemap: false,
         rollupOptions: {
             external: [

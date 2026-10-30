@@ -342,7 +342,8 @@ public class QdrantRestServer {
         // 配了 HNSW 也永远建出 FLAT，且响应只有 status/name，谁都看不见这次降级。
         Object rawIndexType = body.get("index_type");
         if (rawIndexType == null) {
-            store.createCollection(name, dimension, metric, IndexType.FLAT, null, description);
+            // 2026-10-30 修复：走 3 参重载，让 store 的 setDefaultIndex 生效（此前显式传 FLAT 把默认索引顶掉）
+            store.createCollection(name, dimension, metric);
         } else {
             store.createCollection(name, dimension, metric,
                     parseIndexType(rawIndexType, "index_type"), indexParams, description);

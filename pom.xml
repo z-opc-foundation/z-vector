@@ -15,7 +15,7 @@
     <parent>
         <groupId>io.github.yuku123</groupId>
         <artifactId>z-boot-parent</artifactId>
-        <version>1.1.0</version>
+        <version>1.2.0</version>
         <relativePath/>
     </parent>
 
@@ -84,8 +84,8 @@
         <!-- maven.compiler.source/target 刻意留着：父链下发的是 "8"、这里是 "1.8"，
              javac 语义等价但**字面不同值**，不在"与父链同值可删"那一档；本仓 Java 8 线要在
              JDK 8 上跑 source/target（release 只在 JDK 9+ 生效），不在迁移这一刀里顺手换写法。 -->
-        <maven.compiler.source>1.8</maven.compiler.source>
-        <maven.compiler.target>1.8</maven.compiler.target>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- 第三方依赖版本：以下四格**必须留着自钉**，逐条对过父链（z-boot-dependencies:1.0.19
@@ -362,7 +362,7 @@
                 <jdk>[9,)</jdk>
             </activation>
             <properties>
-                <maven.compiler.release>8</maven.compiler.release>
+                <maven.compiler.release>17</maven.compiler.release>
             </properties>
         </profile>
         <profile>

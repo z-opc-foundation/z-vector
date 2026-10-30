@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'node:path'
+import {safeEmptyOutDir} from '../../build-tools/safe-vite-plugin.mjs'
 
 /**
  * z-vector 管理台前端 —— 阶段一（feature001）分开发部署。
@@ -20,7 +21,7 @@ import path from 'node:path'
  * 生产部署：通过 vite build 产出纯静态 dist/，由 nginx（或阶段二的 z-vector-server 静态托管）反代。
  */
 export default defineConfig({
-    plugins: [react()],
+    plugins: [safeEmptyOutDir(), react()],
     resolve: {
         alias: {
             '@': path.resolve(__dirname, 'src'),
