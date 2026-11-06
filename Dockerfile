@@ -22,9 +22,8 @@
 # ============================================================
 # 基础镜像走 build-arg：默认官方坐标，但本网络内 Docker Hub 不可达
 # （auth.docker.io i/o timeout），需要时用 --build-arg 换成可达的镜像站前缀。
-ARG BUILDER_BASE=maven:3.9.9-eclipse-temurin-8
-ARG RUNTIME_BASE=eclipse-temurin:8-jre
-
+ARG BUILDER_BASE=maven:3.9.9-eclipse-temurin-17
+ARG RUNTIME_BASE=eclipse-temurin:17-jre
 FROM ${BUILDER_BASE} AS builder
 
 WORKDIR /build

@@ -1,6 +1,5 @@
 # z-vector-server Dockerfile
-FROM eclipse-temurin:8-jre
-
+FROM eclipse-temurin:17-jre
 LABEL maintainer="zifang"
 LABEL description="z-vector standalone server"
 
