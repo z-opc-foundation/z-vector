@@ -80,7 +80,7 @@ spec:
     spec:
       containers:
         - name: z-vector-server
-          image: z-vector:local
+          image: z-vector:20261111-7775be2
           imagePullPolicy: Never
           ports:
             - name: rest
@@ -158,7 +158,7 @@ spec:
     spec:
       containers:
         - name: z-vector-frontend
-          image: z-vector-frontend:250
+          image: z-vector-frontend:20261111-7775be2
           imagePullPolicy: Never
           ports:
             - name: http

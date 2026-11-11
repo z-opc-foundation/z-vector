@@ -10,7 +10,7 @@
 #     只 COPY suit 目录的话，node_modules 里装不上它，vite 报
 #     "Rollup failed to resolve import" —— 所以构建上下文必须是 _frontend 整层。
 #  3) npm 默认源 registry.npmjs.org 在 250 上不通，只有 npmmirror 通。
-FROM node:20-alpine AS build
+FROM docker.m.daocloud.io/library/node:20-alpine AS build
 WORKDIR /app
 
 # 组件包要先在，因为 package.json 里的 file: 依赖指向它
@@ -26,12 +26,16 @@ RUN rm -rf /app/z-vector-suit/node_modules/@yuku123/z-vector-component \
  && mkdir -p /app/z-vector-suit/node_modules/@yuku123 \
  && cp -r /app/z-vector-component /app/z-vector-suit/node_modules/@yuku123/z-vector-component
 
+# vite.config.mjs 引用 ../../build-tools/safe-vite-plugin.mjs（仓根级共享插件），
+# 构建上下文是 _frontend 整层，因此 build-tools 需放在 _frontend/ 下并 COPY 到 /app/build-tools，
+# 使 /app/z-vector-suit 的 ../../build-tools 解析到 /app/build-tools。
+COPY build-tools /build-tools
 COPY z-vector-suit/index.html z-vector-suit/vite.config.mjs ./z-vector-suit/
 COPY z-vector-suit/src ./z-vector-suit/src
 COPY z-vector-suit/public ./z-vector-suit/public
 RUN cd z-vector-suit && npm run build
 
-FROM nginx:1.27-alpine
+FROM docker.m.daocloud.io/library/nginx:1.27-alpine
 LABEL org.opencontainers.image.title="z-vector-frontend" \
       org.opencontainers.image.description="z-vector 管理台 (nginx 静态托管 + /api 反代)" \
       org.opencontainers.image.source="https://github.com/z-opc-foundation/z-vector"
