@@ -42,20 +42,9 @@ data:
   JAVA_OPTS: "-Xms512m -Xmx2048m -XX:+UseG1GC"
 
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: z-vector-data
-  namespace: z-vector
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 10Gi
-
----
 # ===== 后端 Deployment =====
+# 数据不再走 PVC（2026-11-11 持久化规范）：真源目录 = 节点 zifang002 的
+# /home/zifang/data/z-vector，由下方 Deployment 的 hostPath + nodeSelector 成对钉住。
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -78,6 +67,9 @@ spec:
         app.kubernetes.io/name: z-vector-server
         app.kubernetes.io/part-of: z-vector
     spec:
+      # ⚠ 与 hostPath 成对钉节点（「注意分布式」）：数据在节点本地盘 ⇒ pod 漂到别的节点即丢数据。
+      nodeSelector:
+        kubernetes.io/hostname: zifang002
       containers:
         - name: z-vector-server
           image: z-vector:20261111-7775be2
@@ -113,9 +105,13 @@ spec:
             - name: data
               mountPath: /data/zvector
       volumes:
+        # 向量库真源 = zifang002:/home/zifang/data/z-vector（2026-11-11 自 PVC 迁入）。
+        # ⚠ 节点侧目录属主须为容器运行 uid（10001），否则 wal.log 写入 Permission denied
+        #   （2026-11-11 实测：root:644 的 wal.log 直接 CrashLoopBackOff）。
         - name: data
-          persistentVolumeClaim:
-            claimName: z-vector-data
+          hostPath:
+            path: /home/zifang/data/z-vector
+            type: Directory
 
 ---
 apiVersion: v1
