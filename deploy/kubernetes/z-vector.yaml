@@ -72,7 +72,7 @@ spec:
         kubernetes.io/hostname: zifang002
       containers:
         - name: z-vector-server
-          image: z-vector:20261111-7775be2
+          image: z-vector:20261112-76ed90f
           imagePullPolicy: Never
           ports:
             - name: rest
@@ -154,7 +154,7 @@ spec:
     spec:
       containers:
         - name: z-vector-frontend
-          image: z-vector-frontend:20261111-7775be2
+          image: z-vector-frontend:20261112-76ed90f
           imagePullPolicy: Never
           ports:
             - name: http
