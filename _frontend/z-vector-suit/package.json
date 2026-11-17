@@ -25,7 +25,10 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^4.2.1",
     "jsdom": "^25.0.1",
-    "vite": "^6.2.6",
+    "vite": "^6.4.5",
     "vitest": "^2.1.9"
+  },
+  "overrides": {
+    "follow-redirects": "^1.16.2"
   }
 }
