@@ -15,7 +15,7 @@
     <parent>
         <groupId>io.github.yuku123</groupId>
         <artifactId>z-boot-parent</artifactId>
-        <version>1.2.3</version>
+        <version>1.2.4</version>
         <relativePath/>
     </parent>
 
@@ -76,7 +76,7 @@
              下游解析 parent 时直接找不到构件。 -->
         <revision>1.0.5</revision>
         <!-- java.version / netty.version / jackson.version 三格 2026-09-28 迁移时删除：
-             新父链面值逐字节相同（z-boot-parent:1.0.19 → java.version=1.8；
+             新父链面值逐字节相同（z-boot-parent:1.2.4 → java.version=1.8；
              z-boot-dependencies:1.0.19 → netty-bom 4.1.138.Final、jackson-bom 2.18.6），
              留着就是"每个仓自己再钉一遍"的旧账，删掉后 dependency:tree 实测一件没漂。
              ⚠ 删属性必须同时删掉引用它的 DM 条目/子模块 <version>，否则就是悬空属性。 -->
@@ -302,7 +302,7 @@
                  1) 本仓的 parent 曾经是 com.zifang:z-opc:1.0.0-SNAPSHOT，它永远不会（也不能）出现在
                     Central 上。带着这个 parent 发出去的构件，任何外部消费者第一次解析就报
                     "Could not find artifact com.zifang:z-opc:pom:1.0.0-SNAPSHOT"，等于构件全废。
-                    （2026-09-28 已把 parent 换成 repo1 上真实存在的 io.github.yuku123:z-boot-parent:1.0.19，
+                    （2026-09-28 已把 parent 换成 repo1 上真实存在的 io.github.yuku123:z-boot-parent:1.2.4，
                      源码在别的机器上读得动了；但 flatten 常开的结论不变 —— 发布件仍不该把整条
                      parent 链和它的 DM 形状绑给下游。）
                  2) 版本现在写的是 ${revision}（只在本文件 properties 里定义一次）。带着

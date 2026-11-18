@@ -16,7 +16,7 @@ server 7 / starter 9）。
 
 **坐标与版本：** `io.github.yuku123:z-vector:${revision}`（聚合 POM，`packaging=pom`），
 根 POM `<properties><revision>1.0.5</revision>` 是全仓唯一定义点，子模块不写自己的 `<version>`；
-`<parent>` 是 `io.github.yuku123:z-boot-parent:1.1.0`（`<relativePath/>` 留空）。
+`<parent>` 是 `io.github.yuku123:z-boot-parent:1.2.4`（`<relativePath/>` 留空）。
 
 **技术栈：** Java 8（`maven.compiler.source/target=1.8`）+ Maven 多模块 +
 `flatten-maven-plugin`（oss 模式，常开）+ `maven-shade-plugin` 打 server 的 fat jar +
