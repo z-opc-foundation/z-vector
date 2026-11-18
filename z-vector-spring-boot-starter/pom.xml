@@ -72,13 +72,19 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
-            <version>2.7.12</version>
+            <!-- 2026-11-18 第二轮：2.7.12 → 3.5.16（删掉字面版本，改走 parent DM）
+                 起因 GHSA-mgvc-8q2h-5pgc（C:H，Actuator CloudFoundry 端点认证绕过）：
+                 区间 introduced=0 / last_affected=2.7.18，introduced=3.0.0 / last_affected=3.3.13，
+                 introduced=3.4.0 / last_affected=3.4.13，introduced=3.5.0 / fixed=3.5.12
+                 ⇒ 2.7.12 命中，3.5.16 起干净。
+                 抬版可行性已核：本 starter 源码**零 Boot2 专属 API**
+                 （无 WebSecurityConfigurerAdapter / 无 javax.servlet），
+                 自动装配已用 Boot3 的 META-INF/spring/...AutoConfiguration.imports 形态 ⇒ 纯版本回退残留。 -->
             <optional>true</optional>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
-            <version>2.7.12</version>
             <optional>true</optional>
         </dependency>
 
@@ -93,7 +99,7 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
-            <version>2.7.12</version>
+            <version>3.5.16</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

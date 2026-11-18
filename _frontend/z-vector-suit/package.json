@@ -23,12 +23,14 @@
   "devDependencies": {
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
-    "@vitejs/plugin-react": "^4.2.1",
+    "@vitejs/plugin-react": "^5.1.4",
     "jsdom": "^25.0.1",
     "vite": "^6.4.5",
-    "vitest": "^2.1.9"
+    "vitest": "^4.1.12"
   },
   "overrides": {
-    "follow-redirects": "^1.16.2"
+    "follow-redirects": "^1.16.2",
+    "tinypool": "^2.1.2",
+    "react-router": "^7.18.2"
   }
 }

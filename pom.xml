@@ -15,7 +15,7 @@
     <parent>
         <groupId>io.github.yuku123</groupId>
         <artifactId>z-boot-parent</artifactId>
-        <version>1.2.4</version>
+        <version>1.2.6</version>
         <relativePath/>
     </parent>
 
@@ -99,8 +99,14 @@
                                           与本仓 2.0.13 **面值不同** ⇒ 删掉就是静默降版本；
                junit.version=5.10.2     → 地板的 junit-jupiter 是 5.9.3（property 名叫
                                           junit-jupiter.version），与本仓 5.10.2 **面值不同**。
-             前两格是"父链没供给"，后两格是"父链给了但给得低" —— 删任意一格都等于不改判就换实现。 -->
-        <grpc.version>1.65.1</grpc.version>
+             前两格是"父链没供给"，后两格是"父链给了但给得低" —— 删任意一格都等于不改判就换实现。
+
+             2026-11-18 第二轮：grpc.version 1.65.1 → 1.75.0
+             起因 GHSA-prj3-ccx8-p6x4（C:H，Netty MadeYouReset HTTP/2 DDoS），
+             grpc-netty-shaded 区间 introduced=0 / fixed=1.75.0 ⇒ 1.65.1 命中，1.75.0 起干净。
+             取 1.75.0（刚过修复线）而非更高的 1.79.0 —— 少跨 minor，与本仓 protobuf 3.25.5
+             的组合风险最低。 -->
+        <grpc.version>1.75.0</grpc.version>
         <protobuf.version>3.25.5</protobuf.version>
         <slf4j.version>2.0.13</slf4j.version>
         <junit.version>5.10.2</junit.version>
