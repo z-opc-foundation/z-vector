@@ -90,7 +90,8 @@ export default function App() {
                     <Route element={<ProtectedShell />}>
                         <Route path="/" element={<Navigate to={menuConfig[0].key} replace />} />
                         {routes.map((r) => (
-                            <Route key={r.path} path={r.path} element={r.element} />
+                            <Route key={r.path} path={r.path}
+                                   element={r.element !== undefined ? r.element : (r.Component ? <r.Component /> : undefined)} />
                         ))}
                         <Route path="*" element={<NotFound />} />
                     </Route>
